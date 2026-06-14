@@ -1,0 +1,56 @@
+{
+  "name": "ghosthand",
+  "version": "0.1.0",
+  "description": "Human-like cursor browser automation for coding agents, exposed over MCP. A visible, natural cursor that beats behavioral bot detection.",
+  "type": "module",
+  "bin": {
+    "ghosthand": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "extension/dist",
+    "extension/manifest.json",
+    "extension/icons",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs && node extension/build.mjs",
+    "build:server": "node build.mjs",
+    "build:ext": "node extension/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser-automation",
+    "human-cursor",
+    "mouse-movement",
+    "anti-detection",
+    "claude",
+    "agent"
+  ],
+  "license": "MIT",
+  "author": "Deepanshu Kumar",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.43",
+    "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

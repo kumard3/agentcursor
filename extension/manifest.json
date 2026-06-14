@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Ghosthand",
+  "version": "0.1.0",
+  "description": "Human-like cursor automation bridge for coding agents over MCP.",
+  "permissions": ["tabs", "activeTab", "scripting", "debugger", "alarms"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "dist/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["dist/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

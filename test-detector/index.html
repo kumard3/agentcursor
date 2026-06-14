@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ghosthand — cursor realism detector</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+        max-width: 920px;
+        margin-inline: auto;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p.sub { margin: 0 0 20px; opacity: 0.7; }
+      .targets {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 28px;
+        border: 1px dashed currentColor;
+        border-radius: 10px;
+        margin-bottom: 20px;
+      }
+      button.target, input.target {
+        padding: 10px 16px;
+        font-size: 15px;
+        border-radius: 8px;
+        border: 1px solid #8888;
+      }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #8883; }
+      th { opacity: 0.7; font-weight: 600; }
+      .ok { color: #1a9d5a; font-weight: 600; }
+      .bad { color: #d23f3f; font-weight: 600; }
+      code { background: #8882; padding: 1px 5px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Ghosthand cursor realism detector</h1>
+    <p class="sub">
+      Click the targets — with your hand, then with the agent. Each click scores
+      the movement that led up to it on the same features bot-detectors use:
+      straightness, velocity variance, dwell, off-center landing, overshoot, and
+      <code>isTrusted</code>.
+    </p>
+
+    <div class="targets" id="targets">
+      <button class="target">Submit</button>
+      <button class="target">Continue</button>
+      <button class="target">Buy now</button>
+      <input class="target" type="text" placeholder="type here" />
+      <button class="target">Confirm</button>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>samples</th>
+          <th>straightness</th>
+          <th>speed CV</th>
+          <th>dwell ms</th>
+          <th>offset px</th>
+          <th>overshoot</th>
+          <th>trusted</th>
+          <th>verdict</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <script src="detector.js"></script>
+  </body>
+</html>
