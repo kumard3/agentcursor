@@ -21,6 +21,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "smoke": "npm run build:server && node scripts/smoke.mjs",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build"
   },

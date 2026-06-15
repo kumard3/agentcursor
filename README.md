@@ -138,8 +138,9 @@ use. Use it to tune the engine.
 ```bash
 npm run dev         # run the server with tsx (no build)
 npm run typecheck    # tsc --noEmit
-npm test             # vitest (path-engine unit tests)
+npm test             # vitest (path-engine + coord-map unit tests)
 npm run build:ext    # rebuild just the extension
+npm run smoke        # end-to-end run: real MCP client + server, simulated browser
 ```
 
 ## Credits
