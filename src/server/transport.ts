@@ -25,6 +25,15 @@ export class ExtensionTransport {
 
   constructor(port = DEFAULT_WS_PORT) {
     this.wss = new WebSocketServer({ host: "127.0.0.1", port });
+    this.wss.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        process.stderr.write(
+          `agentcursor: port ${port} is already in use. Set AGENTCURSOR_WS_PORT to a free port.\n`,
+        );
+        process.exit(1);
+      }
+      process.stderr.write(`agentcursor: WebSocket server error: ${err.message}\n`);
+    });
     this.wss.on("connection", (ws) => {
       this.socket = ws;
       ws.on("message", (data) => this.onMessage(data.toString()));

@@ -1,4 +1,4 @@
-export const DEFAULT_WS_PORT = 8787;
+export const DEFAULT_WS_PORT = 8930;
 export const PROTOCOL_VERSION = 1;
 
 export interface Point {

@@ -89,8 +89,9 @@ claude mcp add agentcursor -- node /absolute/path/to/agentcursor/dist/index.js
 }
 ```
 
-The server hosts the extension WebSocket on `ws://127.0.0.1:8787` (override with
-`AGENTCURSOR_WS_PORT`). The extension reconnects automatically.
+The server hosts the extension WebSocket on `ws://127.0.0.1:8930` (override with
+`AGENTCURSOR_WS_PORT`). If the port is taken, the server exits with a clear
+message. The extension reconnects automatically.
 
 ## Tools
 
