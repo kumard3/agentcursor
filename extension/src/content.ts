@@ -27,6 +27,16 @@ async function handle(cmd: Command): Promise<unknown> {
       return buildSnapshot(cmd.maxElements, cmd.includeText);
     case "cursorState":
       return cursorState();
+    case "windowGeometry":
+      return {
+        screenX: window.screenX,
+        screenY: window.screenY,
+        innerWidth,
+        innerHeight,
+        outerWidth: window.outerWidth,
+        outerHeight: window.outerHeight,
+        devicePixelRatio,
+      };
     case "replayMove":
       await replayMove(cmd.samples);
       return null;

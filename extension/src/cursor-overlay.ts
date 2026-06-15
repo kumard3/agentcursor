@@ -10,7 +10,7 @@ export class CursorOverlay {
 
   constructor() {
     this.el = document.createElement("div");
-    this.el.setAttribute("data-ghosthand", "cursor");
+    this.el.setAttribute("data-agentcursor", "cursor");
     Object.assign(this.el.style, {
       position: "fixed",
       left: "0px",

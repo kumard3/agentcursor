@@ -15,7 +15,7 @@ interface Pending {
 }
 
 const NOT_CONNECTED =
-  "Ghosthand extension is not connected. Load the extension and open a normal browser tab.";
+  "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
 
 /** Hosts a localhost WebSocket and turns commands into awaited request/reply. */
 export class ExtensionTransport {

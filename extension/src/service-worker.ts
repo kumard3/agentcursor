@@ -25,7 +25,7 @@ function connect(): void {
   }
   socket = new WebSocket(`ws://127.0.0.1:${PORT}`);
   socket.addEventListener("open", () =>
-    console.log("[ghosthand] connected to MCP server"),
+    console.log("[agentcursor] connected to MCP server"),
   );
   socket.addEventListener("message", (ev) => onCommand(String(ev.data)));
   socket.addEventListener("close", () => {
@@ -110,7 +110,7 @@ async function sendToContent(tabId: number, cmd: Command): Promise<unknown> {
     res = await chrome.tabs.sendMessage(tabId, env);
   } catch {
     throw new Error(
-      "Ghosthand content script is not present on this tab (chrome:// and Web Store pages are not supported).",
+      "AgentCursor content script is not present on this tab (chrome:// and Web Store pages are not supported).",
     );
   }
   if (!res) throw new Error("No response from page");
@@ -118,7 +118,7 @@ async function sendToContent(tabId: number, cmd: Command): Promise<unknown> {
   return res.data;
 }
 
-chrome.alarms.create("ghosthand-keepalive", { periodInMinutes: 0.4 });
+chrome.alarms.create("agentcursor-keepalive", { periodInMinutes: 0.4 });
 chrome.alarms.onAlarm.addListener(() => {
   if (!socket || socket.readyState === WebSocket.CLOSED) connect();
 });

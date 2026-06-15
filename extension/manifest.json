@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Ghosthand",
+  "name": "AgentCursor",
   "version": "0.1.0",
   "description": "Human-like cursor automation bridge for coding agents over MCP.",
   "permissions": ["tabs", "activeTab", "scripting", "debugger", "alarms"],

@@ -1,19 +1,19 @@
-# Ghosthand
+# AgentCursor
 
 **Human-like cursor browser automation for coding agents, over MCP.**
 
-Ghosthand lets any MCP-capable coding agent (Claude Code, Cursor, …) read the
+AgentCursor lets any MCP-capable coding agent (Claude Code, Cursor, …) read the
 page you're looking at and drive it with a **visible, human-like cursor** — one
 that's convincing both to a person watching the screen and to behavioral bot
 detection.
 
 The major agent browser servers (Playwright MCP, browser-use, Stagehand,
 Skyvern) don't ship human-like cursor movement in their open-source core —
-stealth is paywalled into cloud tiers. Ghosthand is that missing piece, MIT
+stealth is paywalled into cloud tiers. AgentCursor is that missing piece, MIT
 licensed.
 
-> Status: phase 1 (Chrome extension). Phase 2 (macOS OS-cursor for genuinely
-> trusted events) is on the roadmap. See [`docs/DESIGN.md`](docs/DESIGN.md).
+> Status: phase 1 (Chrome extension) and phase 2 (macOS OS-cursor for genuinely
+> trusted events) are both implemented. See [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## How it works
 
@@ -55,8 +55,8 @@ endgame is the phase-2 OS cursor (genuine, trusted OS events).
 ## Install
 
 ```bash
-git clone <your-fork-url> ghosthand
-cd ghosthand
+git clone <your-fork-url> agentcursor
+cd agentcursor
 npm install
 npm run build      # builds dist/index.js + extension/dist/*
 ```
@@ -73,7 +73,7 @@ npm run build      # builds dist/index.js + extension/dist/*
 **Claude Code:**
 
 ```bash
-claude mcp add ghosthand -- node /absolute/path/to/ghosthand/dist/index.js
+claude mcp add agentcursor -- node /absolute/path/to/agentcursor/dist/index.js
 ```
 
 **Any MCP client (JSON config):**
@@ -81,16 +81,16 @@ claude mcp add ghosthand -- node /absolute/path/to/ghosthand/dist/index.js
 ```json
 {
   "mcpServers": {
-    "ghosthand": {
+    "agentcursor": {
       "command": "node",
-      "args": ["/absolute/path/to/ghosthand/dist/index.js"]
+      "args": ["/absolute/path/to/agentcursor/dist/index.js"]
     }
   }
 }
 ```
 
 The server hosts the extension WebSocket on `ws://127.0.0.1:8787` (override with
-`GHOSTHAND_WS_PORT`). The extension reconnects automatically.
+`AGENTCURSOR_WS_PORT`). The extension reconnects automatically.
 
 ## Tools
 
@@ -107,6 +107,24 @@ The server hosts the extension WebSocket on `ws://127.0.0.1:8787` (override with
 
 Any driving action accepts `stealth: true` to deliver trusted events through the
 `chrome.debugger` driver (this shows Chrome's "debugging this browser" banner).
+
+## Trusted OS cursor (phase 2, macOS)
+
+Content-script events are `isTrusted=false`, and `chrome.debugger` still leaks
+CDP tells. For genuinely trusted, indistinguishable input, switch to the
+OS-cursor driver, which moves the real macOS system cursor along the same human
+path:
+
+```bash
+npm install @nut-tree-fork/nut-js        # optional native dependency
+AGENTCURSOR_DRIVER=os node dist/index.js
+```
+
+It still reads the page through the extension (keep a normal tab focused), but
+every move/click/scroll becomes a real OS event. Requires the Chrome window
+visible and foregrounded at 100% zoom, and Accessibility permission for your
+terminal/Node in System Settings → Privacy & Security. Coordinate mapping for
+multi-monitor / fractional-scaling setups is still rough.
 
 ## Measuring realism
 

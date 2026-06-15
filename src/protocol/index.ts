@@ -44,12 +44,23 @@ export interface PageSnapshot {
   text: string;
 }
 
+export interface WindowGeometry {
+  screenX: number;
+  screenY: number;
+  innerWidth: number;
+  innerHeight: number;
+  outerWidth: number;
+  outerHeight: number;
+  devicePixelRatio: number;
+}
+
 export type DeliveryMode = "content" | "debugger";
 export type MouseButton = "left" | "right" | "middle";
 
 export type Command =
   | { kind: "snapshot"; maxElements: number; includeText: boolean }
   | { kind: "cursorState" }
+  | { kind: "windowGeometry" }
   | { kind: "replayMove"; samples: CursorSample[]; mode: DeliveryMode }
   | {
       kind: "replayClick";

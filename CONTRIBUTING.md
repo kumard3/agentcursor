@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in Ghosthand.
+Thanks for your interest in AgentCursor.
 
 ## Layout
 

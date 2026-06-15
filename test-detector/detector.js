@@ -1,6 +1,6 @@
 // Records pointer telemetry and scores the movement before each click on the
 // same features behavioral bot detection looks at. No build step — open the
-// file directly, or serve the folder, and drive it with Ghosthand.
+// file directly, or serve the folder, and drive it with AgentCursor.
 
 const IDLE_GAP_MS = 500;
 let path = [];

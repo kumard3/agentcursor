@@ -1,4 +1,4 @@
-# Ghosthand — Design
+# AgentCursor — Design
 
 Human-like cursor browser automation for coding agents, over MCP.
 
@@ -79,13 +79,17 @@ research:
 
 ## Phasing
 
-- **Phase 1 — Hybrid Chrome extension (MV3):** MCP plumbing, `read_page`,
-  visible animated cursor, content-script default with a `chrome.debugger`
-  stealth path. Ships fast, runs on your real Chrome, no separate install.
-- **Phase 2 — macOS OS-cursor driver:** the same engine feeds CGEvent (via a
-  native helper) to move the *real* system cursor → genuinely trusted,
-  indistinguishable events. Implements the same `BrowserDriver` interface.
-  Adds element-rect → screen-coordinate mapping.
+- **Phase 1 — Hybrid Chrome extension (MV3) [implemented]:** MCP plumbing,
+  `read_page`, visible animated cursor, content-script default with a
+  `chrome.debugger` stealth path. Ships fast, runs on your real Chrome, no
+  separate install.
+- **Phase 2 — macOS OS-cursor driver [implemented]:** the same engine feeds
+  `@nut-tree-fork/nut-js` (optional native dep) to move the *real* system cursor
+  → genuinely trusted, indistinguishable events. Selected with
+  `AGENTCURSOR_DRIVER=os`. Implements the same `BrowserDriver` interface; senses
+  the page through the extension (`snapshot`, `windowGeometry`) and maps element
+  rects → screen coordinates via `src/drivers/coord-map`. Multi-monitor and
+  fractional-scaling mapping is still approximate.
 
 ## Testing / validation
 
