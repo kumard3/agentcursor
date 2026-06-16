@@ -1,0 +1,9 @@
+{
+  "name": "agentcursor",
+  "description": "Local, free, human-like browser automation over MCP. A visible, realistic cursor for coding agents, E2E testing, and workflows on real sites.",
+  "version": "0.2.0",
+  "author": { "name": "Deepanshu Kumar" },
+  "homepage": "https://github.com/kumard3/agentcursor",
+  "repository": "https://github.com/kumard3/agentcursor",
+  "license": "MIT"
+}

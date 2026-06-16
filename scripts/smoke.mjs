@@ -31,6 +31,10 @@ function answer(command) {
     case "snapshot": return SNAPSHOT;
     case "getUrl": return SNAPSHOT.url;
     case "waitFor": return true;
+    case "screenshot": return "data:image/png;base64,FAKE";
+    case "hover": 
+    case "ensureVisible":
+    case "drag": return null;
     case "replayMove":
     case "replayClick": captured.lastSamples = command.samples; return null;
     default: return null;
@@ -98,18 +102,23 @@ async function main() {
   console.log(`   live cursor path: ${pathReport(captured.lastSamples)}\n`);
 
   console.log(`type e1 → ${text(await client.callTool({ name: "type", arguments: { ref: "e1", text: "hello@example.com" } }))}`);
+  console.log(`hover e2 → ${text(await client.callTool({ name: "hover", arguments: { ref: "e2" } }))}`);
   console.log(`scroll → ${text(await client.callTool({ name: "scroll", arguments: { dy: 600 } }))}`);
   console.log(`get_url → ${text(await client.callTool({ name: "get_url", arguments: {} }))}`);
-  console.log(`wait_for → ${text(await client.callTool({ name: "wait_for", arguments: { text: "Sign in" } }))}\n`);
+  console.log(`wait_for → ${text(await client.callTool({ name: "wait_for", arguments: { text: "Sign in" } }))}`);
+  const shot = await client.callTool({ name: "screenshot", arguments: {} });
+  console.log(`screenshot → received data URL (length ${text(shot).length})`);
+  console.log(`status →\n${text(await client.callTool({ name: "status", arguments: {} }))}\n`);
 
   console.log(`commands the browser received: ${captured.commands.join(", ")}`);
 
   const samples = captured.lastSamples ?? [];
   const checks = {
-    "8 tools registered": tools.tools.length === 8,
+    "12+ tools registered": tools.tools.length >= 12,
     "cursor path generated": samples.length > 8,
     "path is curved, not straight": straightnessOf(samples) < 0.999,
     "timing starts at 0": samples[0]?.t === 0,
+    "screenshot returned data": text(shot).startsWith("data:image"),
   };
 
   await client.close();

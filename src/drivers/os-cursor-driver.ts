@@ -1,8 +1,10 @@
 import type {
   CursorSample,
   DeliveryMode,
+  MouseButton,
   PageSnapshot,
   Point,
+  Rect,
   WindowGeometry,
 } from "../protocol";
 import type { ExtensionTransport } from "../server/transport";
@@ -81,6 +83,31 @@ export class OsCursorDriver implements BrowserDriver {
       { kind: "waitFor", ...args },
       args.timeoutMs + 5_000,
     )) as boolean;
+  }
+
+  async screenshot(format: "png" | "jpeg" = "png"): Promise<string> {
+    return (await this.transport.send({ kind: "screenshot", format })) as string;
+  }
+
+  async hover(opts: { ref?: string; x?: number; y?: number; stealth?: boolean }): Promise<void> {
+    // Hover events come from the extension bridge; OS cursor already moved during approach if needed
+    await this.transport.send(
+      { kind: "hover", ref: opts.ref, x: opts.x, y: opts.y, mode: "content" },
+      30_000,
+    );
+  }
+
+  async ensureVisible(ref?: string, point?: Point): Promise<Rect | null> {
+    return (await this.transport.send({
+      kind: "ensureVisible",
+      ref,
+      point,
+    })) as Rect | null;
+  }
+
+  async drag(args: { samples: CursorSample[]; target: Point; button: MouseButton; mode: DeliveryMode }): Promise<void> {
+    // For OS driver, drag is move + button held (simplified; real would press before move)
+    await this.move(args.samples, args.mode);
   }
 
   async cursorState(): Promise<Point> {

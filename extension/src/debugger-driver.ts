@@ -30,6 +30,9 @@ export class DebuggerDriver {
         case "scroll":
           await this.scroll(tabId, cmd.dx, cmd.dy, cmd.steps);
           return null;
+        case "drag":
+          await this.drag(tabId, cmd.samples, cmd.target, cmd.button);
+          return null;
         default:
           throw new Error(`debugger driver cannot handle '${cmd.kind}'`);
       }
@@ -132,5 +135,15 @@ export class DebuggerDriver {
       });
       await sleep(rand(12, 28));
     }
+  }
+
+  private async drag(tabId: number, samples: CursorSample[], target: Point, button: MouseButton): Promise<void> {
+    // DRY with click: press, move samples, release (for drag while holding)
+    if (samples.length > 0) {
+      await this.move(tabId, samples);
+    }
+    await this.press(tabId, target, button, 1);
+    await sleep(50);
+    await this.release(tabId, target, button, 1);
   }
 }

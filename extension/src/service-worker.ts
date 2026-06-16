@@ -7,6 +7,7 @@ import {
   type DeliveryMode,
 } from "../../src/protocol";
 import { DebuggerDriver } from "./debugger-driver";
+import { log } from "./timing";
 
 const PORT = DEFAULT_WS_PORT;
 const debuggerDriver = new DebuggerDriver();
@@ -25,7 +26,7 @@ function connect(): void {
   }
   socket = new WebSocket(`ws://127.0.0.1:${PORT}`);
   socket.addEventListener("open", () =>
-    console.log("[agentcursor] connected to MCP server"),
+    log("connected to MCP server"),
   );
   socket.addEventListener("message", (ev) => onCommand(String(ev.data)));
   socket.addEventListener("close", () => {
@@ -88,6 +89,15 @@ async function route(cmd: Command): Promise<unknown> {
     const tab = await chrome.tabs.get(tabId);
     return tab.url ?? "";
   }
+  if (cmd.kind === "screenshot") {
+    const format = cmd.format ?? "png";
+    const dataUrl = await chrome.tabs.captureVisibleTab({ format });
+    return dataUrl;
+  }
+  if (cmd.kind === "hover" || cmd.kind === "ensureVisible") {
+    // Hover and ensureVisible go via content (for DOM scrollIntoView + events)
+    return sendToContent(tabId, cmd);
+  }
   if (isDrive(cmd) && cmd.mode === "debugger") {
     return debuggerDriver.handle(tabId, cmd);
   }
@@ -99,7 +109,8 @@ function isDrive(cmd: Command): cmd is DriveCommand {
     cmd.kind === "replayMove" ||
     cmd.kind === "replayClick" ||
     cmd.kind === "type" ||
-    cmd.kind === "scroll"
+    cmd.kind === "scroll" ||
+    cmd.kind === "drag"
   );
 }
 

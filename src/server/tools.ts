@@ -120,17 +120,129 @@ export function registerTools(server: McpServer, action: ActionService): void {
     "wait_for",
     {
       description:
-        "Wait until an element [ref] appears or some visible text is present, up to timeoutMs (default 10000).",
+        "Wait until an element [ref] appears or some visible text is present (or specific condition), up to timeoutMs (default 10000). Supports condition: 'exists' | 'visible' | 'text'. Use in testing and automation flows for resilience on dynamic sites.",
       inputSchema: {
         ref: z.string().optional(),
         text: z.string().optional(),
         timeoutMs: z.number().int().optional(),
+        condition: z.enum(["exists", "visible", "text"]).optional(),
       },
     },
     async (args) => {
       const ok = await action.waitFor(args);
       return text(ok ? "found" : "timed out");
     },
+  );
+
+  server.registerTool(
+    "screenshot",
+    {
+      description:
+        "Capture a screenshot of the currently visible tab (PNG data URL by default). Critical for testing, visual verification, debugging workflows, and letting agents 'see' page state after actions.",
+      inputSchema: {
+        format: z.enum(["png", "jpeg"]).optional(),
+      },
+    },
+    async ({ format }) => {
+      const dataUrl = await action.screenshot(format ?? "png");
+      return text(dataUrl);
+    },
+  );
+
+  server.registerTool(
+    "hover",
+    {
+      description:
+        "Human-like move the cursor to an element or coordinates and fire hover events (mouseover, mouseenter). Essential for dropdowns, tooltips, navigation menus, and realistic workflow/testing automation.",
+      inputSchema: {
+        ref: z.string().optional(),
+        x: z.number().optional(),
+        y: z.number().optional(),
+        stealth: z.boolean().optional(),
+      },
+    },
+    async (args) => {
+      await action.hover(args);
+      const where = args.ref ? `'${args.ref}'` : args.x != null ? `(${args.x},${args.y})` : "current position";
+      return text(`hovered ${where}`);
+    },
+  );
+
+  server.registerTool(
+    "status",
+    {
+      description:
+        "Return current MCP server status, driver in use (extension or os), whether the browser bridge is connected, and the active tab URL if available. Use for health checks in long-running tests, CI workflows, and agent monitoring.",
+      inputSchema: {},
+    },
+    async () => {
+      const url = await action.getUrl().catch(() => null);
+      const connected = url !== null;
+      return text(
+        [
+          `driver: ${process.env.AGENTCURSOR_DRIVER ?? "extension"}`,
+          `bridge_connected: ${connected}`,
+          `active_url: ${url ?? "none (extension not connected or no http tab)"}`,
+          `ws_port: ${process.env.AGENTCURSOR_WS_PORT ?? 8930}`,
+          "protocol_version: 1",
+        ].join("\n"),
+      );
+    },
+  );
+
+  server.registerTool(
+    "drag",
+    {
+      description:
+        "Perform a human-like drag from one element/ref or coords to another (e.g. for sliders, reordering, canvas drawing). Uses the realistic path engine while holding the mouse button.",
+      inputSchema: {
+        fromRef: z.string().optional(),
+        fromX: z.number().optional(),
+        fromY: z.number().optional(),
+        toRef: z.string().optional(),
+        toX: z.number().optional(),
+        toY: z.number().optional(),
+        button: z.enum(["left", "right", "middle"]).optional(),
+        stealth: z.boolean().optional(),
+      },
+    },
+    async (args) => {
+      await action.drag(
+        { ref: args.fromRef, x: args.fromX, y: args.fromY },
+        { ref: args.toRef, x: args.toX, y: args.toY },
+        (args.button ?? "left") as any,
+        args.stealth,
+      );
+      return text("dragged");
+    },
+  );
+
+  // MCP Prompt for better agent guidance (Phase 3 adoption)
+  server.registerPrompt(
+    "human-browser-task",
+    {
+      description: "Guide for performing realistic, human-like browser automation tasks using agentcursor tools. Use this for any non-trivial interaction on real websites.",
+    },
+    async () => ({
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `When using agentcursor:
+1. Always call status and read_page first to understand the current page and connection.
+2. Use [ref] from read_page for all clicks, hovers, types.
+3. For complex pages, use screenshot often to ground yourself.
+4. Prefer human-like: move_to or hover before click, use wait_for for dynamic content.
+5. On modern sites (X, Reddit etc), the snapshot now handles shadow DOM.
+6. For stealth on sensitive sites, use stealth:true (but it shows debugger banner).
+7. After navigate or major changes, re-read_page.
+8. Use ensureVisible implicitly via the tools (scrolls targets into view).
+Be patient with SPAs - combine wait_for + read_page loops.`,
+          },
+        },
+      ],
+    }),
   );
 }
 
@@ -145,8 +257,10 @@ function formatSnapshot(snap: PageSnapshot): string {
     const r = e.rect;
     const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
     const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
+    const vis = e.visible !== undefined ? (e.visible ? " visible" : " hidden") : "";
+    const vp = e.inViewport !== undefined ? (e.inViewport ? " in-view" : " off-view") : "";
     lines.push(
-      `  [${e.ref}] ${e.role}${name} <${e.tag}>${val} @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}`,
+      `  [${e.ref}] ${e.role}${name} <${e.tag}>${val} @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vis}${vp}`,
     );
   }
   if (snap.text) lines.push("", "Text:", truncate(snap.text, 4000));

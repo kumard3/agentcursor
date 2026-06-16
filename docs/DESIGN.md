@@ -1,6 +1,8 @@
 # AgentCursor — Design
 
-Human-like cursor browser automation for coding agents, over MCP.
+Local, free, human-like browser automation over MCP.
+
+Positioned for coding agents, E2E testing, QA workflows, and general browser automation on real sites. The human cursor + timing is the key differentiator that makes interactions resilient and observable.
 
 ## Goal
 

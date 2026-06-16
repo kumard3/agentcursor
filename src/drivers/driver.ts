@@ -4,6 +4,7 @@ import type {
   MouseButton,
   PageSnapshot,
   Point,
+  Rect,
 } from "../protocol";
 
 export interface ClickArgs {
@@ -35,6 +36,7 @@ export interface WaitArgs {
   ref?: string;
   text?: string;
   timeoutMs: number;
+  condition?: "exists" | "visible" | "text";
 }
 
 /**
@@ -52,4 +54,8 @@ export interface BrowserDriver {
   navigate(url: string): Promise<void>;
   getUrl(): Promise<string>;
   waitFor(args: WaitArgs): Promise<boolean>;
+  screenshot(format?: "png" | "jpeg"): Promise<string>;
+  hover(opts: { ref?: string; x?: number; y?: number; stealth?: boolean }): Promise<void>;
+  ensureVisible(ref?: string, point?: Point): Promise<Rect | null>;
+  drag(args: { samples: CursorSample[]; target: Point; button: MouseButton; mode: DeliveryMode }): Promise<void>;
 }

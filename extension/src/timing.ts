@@ -8,3 +8,7 @@ export const rand = (min: number, max: number): number =>
   min + Math.random() * (max - min);
 
 export const smooth = (t: number): number => t * t * (3 - 2 * t);
+
+export function log(msg: string) {
+  console.log(`[agentcursor] ${msg}`);
+}

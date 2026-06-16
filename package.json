@@ -1,7 +1,7 @@
 {
   "name": "agentcursor",
-  "version": "0.1.0",
-  "description": "Human-like cursor browser automation for coding agents, exposed over MCP. A visible, natural cursor that beats behavioral bot detection.",
+  "version": "0.2.0",
+  "description": "Local free human-like browser automation over MCP. Realistic cursor + interactions for coding agents, E2E testing, QA workflows, and general browser automation on real sites.",
   "type": "module",
   "bin": {
     "agentcursor": "dist/index.js"

@@ -4,6 +4,7 @@ import type { Point, WindowGeometry } from "../protocol";
  * Page viewport (CSS px) <-> OS screen coordinates. Assumes 100% browser zoom
  * (1 CSS px ≈ 1 screen point) and the toolbar/title bar sitting above the
  * viewport. devicePixelRatio is reported for callers that need device pixels.
+ * Known limitation: multi-monitor and fractional scaling can be off; use at 100% zoom.
  */
 
 function chromeOffsets(g: WindowGeometry): { left: number; top: number } {

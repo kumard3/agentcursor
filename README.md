@@ -1,19 +1,26 @@
 # AgentCursor
 
-**Human-like cursor browser automation for coding agents, over MCP.**
+**Local, free, human-like browser automation over MCP — for agents, testing, and workflows.**
 
-AgentCursor lets any MCP-capable coding agent (Claude Code, Cursor, …) read the
-page you're looking at and drive it with a **visible, human-like cursor** — one
-that's convincing both to a person watching the screen and to behavioral bot
-detection.
+AgentCursor gives you (and any coding agent or automation script) a **real browser** driven with **visible, convincingly human cursor movement and timing**.
 
-The major agent browser servers (Playwright MCP, browser-use, Stagehand,
-Skyvern) don't ship human-like cursor movement in their open-source core —
-stealth is paywalled into cloud tiers. AgentCursor is that missing piece, MIT
-licensed.
+Use it as:
+- A powerful MCP tool for Claude, Cursor, Grok, custom agents, etc.
+- A realistic E2E / acceptance testing tool that works on actual production sites (human paths + timing are more resilient than robotic Playwright clicks).
+- A workflow automation engine for complex multi-step processes (logins, form flows, data entry, admin tasks) with natural hover, move, type, and scroll behavior.
+- A debugging / demo automation tool (the cursor is visible so you can watch exactly what the automation did).
+
+All local. All free. MIT licensed. No cloud, no paywalled stealth.
+
+The major browser automation MCPs often make realistic movement a cloud-only feature. AgentCursor brings the realistic cursor to your local machine for agents **and** traditional testing/automation use cases.
 
 > Status: phase 1 (Chrome extension) and phase 2 (macOS OS-cursor for genuinely
 > trusted events) are both implemented. See [`docs/DESIGN.md`](docs/DESIGN.md).
+
+## Changelog (key updates)
+
+- **0.2.0**: Added `screenshot`, `hover`, `status` MCP tools. Deep shadow DOM traversal in `read_page` / snapshot (critical for X.com, Reddit, modern SPAs). Library re-exports for programmatic use. Repositioned as general local automation/testing/workflow tool over MCP. Version bumps and packaging polish.
+- 0.1.0: Initial MCP server, human path engine, extension bridge, OS cursor driver, basic tools (read_page, click, type, etc.).
 
 ## How it works
 
@@ -61,6 +68,17 @@ pnpm install
 pnpm build      # builds dist/index.js + extension/dist/*
 ```
 
+### Install as a Claude Code plugin (one step)
+
+AgentCursor ships as a Claude Code plugin that registers the MCP server for you:
+
+```bash
+claude plugin marketplace add kumard3/agentcursor
+claude plugin install agentcursor
+```
+
+That registers the `agentcursor` MCP server automatically (no manual `claude mcp add`). You still load the extension once (step 1 below). If you previously registered it by hand, remove that to avoid two servers fighting for the port: `claude mcp remove agentcursor`.
+
 ### 1. Load the extension
 
 1. Open `chrome://extensions`, enable **Developer mode**.
@@ -68,15 +86,17 @@ pnpm build      # builds dist/index.js + extension/dist/*
 3. Keep a normal `http(s)` tab open and focused (not `chrome://` or the Web
    Store — content scripts can't run there).
 
-### 2. Connect your agent
+### 2. Connect via MCP (agents, Cursor, Claude, custom tools, etc.)
 
-**Claude Code:**
+**Claude Code / Claude Desktop:**
 
 ```bash
 claude mcp add agentcursor -- node /absolute/path/to/agentcursor/dist/index.js
 ```
 
-**Any MCP client (JSON config):**
+**Cursor, Windsurf, or any MCP-capable coding environment:**
+
+Add to your MCP servers config (exact format depends on the host):
 
 ```json
 {
@@ -89,25 +109,78 @@ claude mcp add agentcursor -- node /absolute/path/to/agentcursor/dist/index.js
 }
 ```
 
-The server hosts the extension WebSocket on `ws://127.0.0.1:8930` (override with
-`AGENTCURSOR_WS_PORT`). If the port is taken, the server exits with a clear
-message. The extension reconnects automatically.
+**Any other MCP client** (including future Grok harnesses, custom agents, test runners that speak MCP) — just point it at the stdio server the same way.
 
-## Tools
+The server exposes the WebSocket bridge on `ws://127.0.0.1:8930` (override with `AGENTCURSOR_WS_PORT`). The extension auto-reconnects.
+
+### 3. Programmatic / Direct "API" use (tests, scripts, your own automation)
+
+The architecture is intentionally layered. You can use AgentCursor without going through the full MCP server:
+
+- Import the path engine and `ActionService` + a driver for pure Node automation.
+- Or run the MCP server and speak to it from any MCP client library (the smoke test shows exactly how).
+- Future: optional lightweight HTTP API mode for non-MCP consumers.
+
+See `src/action/service.ts`, `src/drivers/*`, and `src/path-engine` for the reusable pieces. The same human movement logic powers both the MCP tools and direct usage.
+
+This makes AgentCursor a solid foundation for your internal testing frameworks or agent tool use.
+
+## Tools (MCP)
 
 | Tool | What it does |
 | --- | --- |
-| `read_page` | Interactive elements with `[ref]` handles, roles, rects + visible text. |
-| `move_to` | Human path to a `ref` or `x/y`. No click. |
-| `click` | Human move + click. `button`, `double`, `stealth`. |
-| `type` | Type with human key timing; human-clicks a `ref` to focus first. |
-| `scroll` | Eased scroll by `dy`/`dx`. |
-| `navigate` | Point the active tab at a URL. |
+| `read_page` | Interactive elements with stable `[ref]` handles, roles, rects, visible text. Call this first in almost every test or workflow. |
+| `move_to` | Human-like path to a `[ref]` or `x/y` (no click). |
+| `click` | Full human move + click (supports button, double, stealth mode for trusted events). |
+| `hover` | Human approach + hover events (mouseover/mouseenter). Critical for dropdowns, tooltips, nav, and realistic workflows. |
+| `drag` | Human path drag from ref/coords to target while holding button (sliders, reorder, canvas). |
+| `type` | Human-timed keystrokes (auto human-clicks ref to focus if provided). |
+| `scroll` | Eased, human-stepped scrolling. |
+| `screenshot` | Capture current visible tab as PNG/JPEG data URL. Essential for visual assertions in tests, agent grounding, and debugging automation. |
+| `navigate` | Load a URL in the active tab. |
 | `get_url` | Current tab URL. |
-| `wait_for` | Wait for a `ref` or visible `text`. |
+| `wait_for` | Wait for element ref or visible text (up to timeout). Use for resilient testing flows. |
+| `status` | Health / connection status, driver, active URL, port. Great for CI, long-running workflows, and monitoring. |
 
 Any driving action accepts `stealth: true` to deliver trusted events through the
 `chrome.debugger` driver (this shows Chrome's "debugging this browser" banner).
+
+## Using as a Testing & Workflow Automation Tool
+
+AgentCursor is not only for agents — it's a practical local browser automation primitive you can use directly in tests and scripts via MCP or by importing the core.
+
+**Why it shines for testing/automation on real sites**:
+- Human cursor paths + dwell + jitter + off-center clicks make interactions look like a real person (useful when sites have light behavioral signals).
+- The visible cursor + overlay makes it excellent for **demo videos**, **manual review of automation**, and debugging failing flows.
+- `screenshot` + `read_page` + `wait_for` + `hover` give you the primitives for visual + functional checks.
+- Works against your **real Chrome profile** (cookies, extensions, logins) — perfect for realistic E2E that headless tools struggle with.
+
+Example flow an agent or a test script might do:
+
+```
+read_page
+hover "nav-menu"
+click "Products"
+wait_for text:"Featured"
+screenshot
+type {ref: "search", text: "laptop"}
+click "search button"
+...
+```
+
+**Direct / programmatic use (API style)**: The core `ActionService`, path engine, and drivers are designed to be importable. See "Programmatic Use" below.
+
+### Example: Using with Claude Code to post on X.com / Reddit
+
+With the MCP integration, you can tell Claude Code (or Cursor) to use agentcursor for realistic posting/automation on real sites:
+
+1. Have a logged-in tab open on x.com (or reddit.com).
+2. Start the server (ideally with OS driver on mac for best results).
+3. In Claude: "Add agentcursor MCP if not present, then use the tools to navigate to x.com if needed, read the page, hover and click the compose area, type a test post, screenshot for verification, and click the post button. Use human-like actions and wait_for as needed. Report status often."
+
+The shadow DOM support (added in 0.2.0) helps surface elements inside X's web components. Combine with `screenshot` + `status` + loops of `read_page` / `wait_for` for resilience on SPAs.
+
+See the testing section above for general flow patterns. Always start with `status` and `read_page`, use `screenshot` to ground the agent.
 
 ## Trusted OS cursor (phase 2, macOS)
 
@@ -148,8 +221,10 @@ pnpm dev         # run the server with tsx (no build)
 pnpm typecheck    # tsc --noEmit
 pnpm test             # vitest (path-engine + coord-map unit tests)
 pnpm build:ext    # rebuild just the extension
-pnpm smoke        # end-to-end run: real MCP client + server, simulated browser
+pnpm smoke        # end-to-end run: real MCP client + server, simulated browser (now covers screenshot/hover/status too)
 ```
+
+The `smoke` script is also a good template for writing your own automation or test runners that drive AgentCursor over MCP.
 
 ## Credits
 

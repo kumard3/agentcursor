@@ -1,8 +1,10 @@
 import type {
   CursorSample,
   DeliveryMode,
+  MouseButton,
   PageSnapshot,
   Point,
+  Rect,
 } from "../protocol";
 import type { ExtensionTransport } from "../server/transport";
 import type {
@@ -68,5 +70,29 @@ export class ExtensionDriver implements BrowserDriver {
       { kind: "waitFor", ...args },
       args.timeoutMs + 5_000,
     )) as boolean;
+  }
+
+  async screenshot(format: "png" | "jpeg" = "png"): Promise<string> {
+    return (await this.transport.send({ kind: "screenshot", format })) as string;
+  }
+
+  async hover(opts: { ref?: string; x?: number; y?: number; stealth?: boolean }): Promise<void> {
+    const mode = opts.stealth ? "debugger" : "content";
+    await this.transport.send(
+      { kind: "hover", ref: opts.ref, x: opts.x, y: opts.y, mode },
+      30_000,
+    );
+  }
+
+  async ensureVisible(ref?: string, point?: Point): Promise<Rect | null> {
+    return (await this.transport.send({
+      kind: "ensureVisible",
+      ref,
+      point,
+    })) as Rect | null;
+  }
+
+  async drag(args: { samples: CursorSample[]; target: Point; button: MouseButton; mode: DeliveryMode }): Promise<void> {
+    await this.transport.send({ kind: "drag", ...args }, 60_000);
   }
 }

@@ -50,9 +50,21 @@ async function handle(cmd: Command): Promise<unknown> {
       await scrollPage(cmd.dx, cmd.dy, cmd.steps);
       return null;
     case "waitFor":
-      return waitFor(cmd.ref, cmd.text, cmd.timeoutMs);
+      return waitFor(cmd.ref, cmd.text, cmd.timeoutMs, cmd.condition);
     case "getUrl":
       return location.href;
+    case "screenshot":
+      // handled in service worker
+      return null;
+    case "hover":
+      await handleHover(cmd.ref, cmd.x, cmd.y);
+      return null;
+    case "ensureVisible":
+      await ensureVisible(cmd.ref, cmd.point);
+      return null;
+    case "drag":
+      await replayDrag(cmd.samples, cmd.target, cmd.button);
+      return null;
     default:
       throw new Error(`content script cannot handle '${cmd.kind}'`);
   }
@@ -144,14 +156,107 @@ async function waitFor(
   ref: string | undefined,
   text: string | undefined,
   timeoutMs: number,
+  condition?: "exists" | "visible" | "text",
 ): Promise<boolean> {
   const deadline = performance.now() + timeoutMs;
+  const effectiveCondition = condition || (ref ? "visible" : "text"); // default to visible for refs (better for UIs)
   while (performance.now() < deadline) {
-    if (ref && refMap.has(ref)) return true;
+    if (ref) {
+      const el = refMap.get(ref);
+      if (el) {
+        if (effectiveCondition === "exists") return true;
+        if (effectiveCondition === "visible" && isVisible(el)) return true;
+      }
+    }
     if (text && document.body.innerText.includes(text)) return true;
-    await sleep(150);
+    await sleep(120); // slightly smarter poll interval
   }
   return false;
+}
+
+async function handleHover(ref?: string, x?: number, y?: number): Promise<void> {
+  await ensureVisible(ref, x != null && y != null ? { x, y } : undefined);
+
+  let targetX: number;
+  let targetY: number;
+  let targetEl: Element | null = null;
+
+  if (typeof x === "number" && typeof y === "number") {
+    targetX = x;
+    targetY = y;
+  } else if (ref) {
+    const el = refMap.get(ref);
+    if (!el) {
+      throw new Error(`Element ref '${ref}' not found. Call read_page first.`);
+    }
+    const rect = el.getBoundingClientRect();
+    targetX = rect.x + rect.width / 2;
+    targetY = rect.y + rect.height / 2;
+    targetEl = el;
+  } else {
+    throw new Error("Provide ref or x/y for hover");
+  }
+
+  overlay.moveTo(targetX, targetY);
+
+  const el = targetEl || (document.elementFromPoint(targetX, targetY) ?? document.documentElement);
+  firePointer(el, "pointermove", targetX, targetY, 0);
+  fireMouse(el, "mousemove", targetX, targetY, 0);
+
+  el.dispatchEvent(
+    new MouseEvent("mouseover", {
+      bubbles: true,
+      cancelable: true,
+      clientX: targetX,
+      clientY: targetY,
+      composed: true,
+      view: window,
+    }),
+  );
+  el.dispatchEvent(
+    new MouseEvent("mouseenter", {
+      bubbles: false,
+      cancelable: true,
+      clientX: targetX,
+      clientY: targetY,
+      composed: true,
+      view: window,
+    }),
+  );
+}
+
+async function ensureVisible(ref?: string, point?: Point): Promise<void> {
+  let el: Element | null = null;
+  if (ref) {
+    el = refMap.get(ref) || null;
+  }
+  if (!el && point) {
+    el = document.elementFromPoint(point.x, point.y);
+  }
+  if (!el) return;
+  if (isFullyInViewport(el)) return;
+  if (typeof (el as any).scrollIntoView === "function") {
+    (el as HTMLElement).scrollIntoView({
+      block: "center",
+      inline: "center",
+      behavior: "auto",
+    });
+    await sleep(60);
+  }
+}
+
+async function replayDrag(
+  samples: CursorSample[],
+  target: Point,
+  button: MouseButton,
+): Promise<void> {
+  // DRY: start with press, replay the human move samples (with button down), then release
+  const elStart = document.elementFromPoint(samples[0]?.x || 0, samples[0]?.y || 0) ?? document.body;
+  const b = buttonIndex(button);
+  pressSequence(elStart, samples[0] || target, b, 50);
+  await replayMove(samples); // the path with button held
+  const elEnd = document.elementFromPoint(target.x, target.y) ?? document.body;
+  releaseSequence(elEnd, target, b, 1);
 }
 
 const INTERACTIVE_SELECTOR = [
@@ -170,31 +275,75 @@ const INTERACTIVE_SELECTOR = [
   "summary",
 ].join(",");
 
+/**
+ * Collects elements matching the selector, traversing into shadow DOMs.
+ * This makes read_page work on modern sites (X/Twitter, Reddit, design systems, etc.)
+ * that use web components.
+ */
+function collectInteractiveDeep(selector: string, max: number): Element[] {
+  const results: Element[] = [];
+  const visited = new WeakSet<Element>();
+
+  function walk(node: Node | ShadowRoot | Document): void {
+    if (results.length >= max) return;
+
+    if (node instanceof Element) {
+      if (visited.has(node)) return;
+      visited.add(node);
+
+      if (node.matches(selector)) {
+        results.push(node);
+      }
+
+      // Recurse into shadow root if present
+      if (node.shadowRoot) {
+        walk(node.shadowRoot);
+      }
+    }
+
+    // Walk child elements (works for Document, ShadowRoot, and Element)
+    const children = (node as any).children;
+    if (children && typeof children.length === "number") {
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        if (child) walk(child);
+      }
+    }
+  }
+
+  walk(document);
+  return results;
+}
+
 function buildSnapshot(maxElements: number, includeText: boolean): PageSnapshot {
   refMap.clear();
   const elements: PageElement[] = [];
   let n = 0;
-  for (const el of document.querySelectorAll(INTERACTIVE_SELECTOR)) {
+
+  // Use deep collection so we find elements inside shadow roots (critical for X.com, Reddit, etc.)
+  const candidates = collectInteractiveDeep(INTERACTIVE_SELECTOR, maxElements * 3);
+
+  for (const el of candidates) {
     if (n >= maxElements) break;
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
     if (rect.bottom < 0 || rect.top > innerHeight || rect.right < 0 || rect.left > innerWidth) {
       continue;
     }
-    const style = getComputedStyle(el);
-    if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") {
-      continue;
-    }
+    if (!isVisible(el)) continue;
+
     const ref = `e${n + 1}`;
     refMap.set(ref, el);
     elements.push({
       ref,
       tag: el.tagName.toLowerCase(),
       role: roleOf(el),
-      name: nameOf(el),
+      name: getBetterName(el),  // improved with DRY getBetterName (aria-labelledby, data-testid, etc.)
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       editable: isEditable(el),
       value: valueOf(el),
+      visible: true,
+      inViewport: isInViewport(el),
     });
     n++;
   }
@@ -225,16 +374,60 @@ function roleOf(el: Element): string {
   return tag;
 }
 
-function nameOf(el: Element): string {
+// DRY visibility and viewport helpers (used in snapshot, wait_for, ensureVisible)
+function isVisible(el: Element): boolean {
+  const rect = (el as HTMLElement).getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const style = getComputedStyle(el);
+  return style.visibility !== "hidden" && style.display !== "none" && parseFloat(style.opacity) > 0;
+}
+
+function isInViewport(el: Element, viewportHeight: number = innerHeight, viewportWidth: number = innerWidth): boolean {
+  const rect = (el as HTMLElement).getBoundingClientRect();
+  return rect.bottom > 0 && rect.top < viewportHeight && rect.right > 0 && rect.left < viewportWidth;
+}
+
+function isFullyInViewport(el: Element): boolean {
+  const rect = (el as HTMLElement).getBoundingClientRect();
+  return rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
+}
+
+function getBetterName(el: Element): string {
+  // aria-label first
   const aria = el.getAttribute("aria-label");
   if (aria) return aria.trim();
+
+  // aria-labelledby
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const labelEl = document.getElementById(labelledBy);
+    if (labelEl) {
+      const labelText = (labelEl.textContent ?? "").trim().replace(/\s+/g, " ");
+      if (labelText) return labelText.slice(0, 80);
+    }
+  }
+
+  // data-testid (common in tests and modern apps)
+  const testId = el.getAttribute("data-testid") || el.getAttribute("data-test-id");
+  if (testId) return testId;
+
   if (el instanceof HTMLInputElement) {
     if (el.placeholder) return el.placeholder;
     if (el.name) return el.name;
   }
+
+  // title or img alt
+  const title = el.getAttribute("title");
+  if (title) return title.trim().slice(0, 80);
+
+  const imgAlt = el.querySelector("img")?.getAttribute("alt");
+  if (imgAlt) return imgAlt.trim().slice(0, 80);
+
+  // fallback to text
   const text = (el.textContent ?? "").trim().replace(/\s+/g, " ");
   if (text) return text.slice(0, 80);
-  return el.getAttribute("title") ?? el.querySelector("img")?.getAttribute("alt") ?? "";
+
+  return "";
 }
 
 function isEditable(el: Element): boolean {

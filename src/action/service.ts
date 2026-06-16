@@ -37,6 +37,7 @@ export class ActionService {
   }
 
   async moveTo(opts: TargetOpts & { stealth?: boolean }): Promise<Point> {
+    await this.ensureFresh(opts.ref);
     const from = await this.ensureStart();
     const { point, width } = await this.resolveTarget(opts);
     const samples = generateMove(from, point, { targetWidth: width });
@@ -52,6 +53,7 @@ export class ActionService {
       stealth?: boolean;
     },
   ): Promise<Point> {
+    await this.ensureFresh(opts.ref);
     const from = await this.ensureStart();
     const { point, width } = await this.resolveTarget(opts);
     const rng = createRng();
@@ -114,11 +116,43 @@ export class ActionService {
     ref?: string;
     text?: string;
     timeoutMs?: number;
+    condition?: "exists" | "visible" | "text";
   }): Promise<boolean> {
     return this.driver.waitFor({
       ref: opts.ref,
       text: opts.text,
       timeoutMs: opts.timeoutMs ?? 10_000,
+      condition: opts.condition,
+    });
+  }
+
+  async screenshot(format: "png" | "jpeg" = "png"): Promise<string> {
+    return this.driver.screenshot(format);
+  }
+
+  async hover(opts: { ref?: string; x?: number; y?: number; stealth?: boolean } = {}): Promise<void> {
+    // For hover we do a human-like approach move first (visible cursor), then hover events.
+    // This makes hover part of natural workflows and testing (tooltips, menus, etc.).
+    if (opts.ref || (typeof opts.x === "number" && typeof opts.y === "number")) {
+      await this.moveTo({ ref: opts.ref, x: opts.x, y: opts.y, stealth: opts.stealth });
+    }
+    await this.driver.hover(opts);
+  }
+
+  async drag(from: TargetOpts, to: TargetOpts, button: MouseButton = "left", stealth?: boolean): Promise<void> {
+    const need = !!(from.ref || to.ref);
+    if (from.ref) await this.driver.ensureVisible(from.ref);
+    if (to.ref) await this.driver.ensureVisible(to.ref);
+    if (need) await this.readPage();
+    const start = await this.resolveTarget(from);
+    const end = await this.resolveTarget(to);
+    const rng = createRng();
+    const samples = generateMove(start.point, end.point, { targetWidth: end.width, rng });
+    await this.driver.drag({
+      samples,
+      target: end.point,
+      button,
+      mode: mode(stealth),
     });
   }
 
@@ -126,6 +160,13 @@ export class ActionService {
     if (this.lastPos) return this.lastPos;
     this.lastPos = await this.driver.cursorState();
     return this.lastPos;
+  }
+
+  private async ensureFresh(ref?: string): Promise<void> {
+    if (ref) {
+      await this.driver.ensureVisible(ref);
+      await this.readPage();
+    }
   }
 
   private async resolveTarget(opts: TargetOpts): Promise<ResolvedTarget> {
@@ -143,6 +184,11 @@ export class ActionService {
   private async findElement(ref: string): Promise<PageElement> {
     let el = this.snapshot?.elements.find((e) => e.ref === ref);
     if (!el) {
+      await this.readPage();  // auto-refresh on miss (DRY resilience for SPAs)
+      el = this.snapshot?.elements.find((e) => e.ref === ref);
+    }
+    if (!el) {
+      // one more aggressive refresh
       await this.readPage();
       el = this.snapshot?.elements.find((e) => e.ref === ref);
     }

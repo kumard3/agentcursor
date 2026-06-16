@@ -28,6 +28,8 @@ export interface PageElement {
   rect: Rect;
   editable: boolean;
   value?: string;
+  visible?: boolean;
+  inViewport?: boolean;
 }
 
 export interface PageSnapshot {
@@ -83,7 +85,17 @@ export type Command =
   | { kind: "scroll"; dx: number; dy: number; steps: number; mode: DeliveryMode }
   | { kind: "navigate"; url: string }
   | { kind: "getUrl" }
-  | { kind: "waitFor"; ref?: string; text?: string; timeoutMs: number };
+  | { kind: "screenshot"; format?: "png" | "jpeg" }
+  | { kind: "hover"; ref?: string; x?: number; y?: number; mode?: DeliveryMode }
+  | { kind: "ensureVisible"; ref?: string; point?: Point }
+  | {
+      kind: "drag";
+      samples: CursorSample[];
+      target: Point;
+      button: MouseButton;
+      mode: DeliveryMode;
+    }
+  | { kind: "waitFor"; ref?: string; text?: string; timeoutMs: number; condition?: "exists" | "visible" | "text" };
 
 export interface CommandEnvelope {
   v: number;

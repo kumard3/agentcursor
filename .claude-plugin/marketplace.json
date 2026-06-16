@@ -1,0 +1,10 @@
+{
+  "version": "1",
+  "plugins": [
+    {
+      "name": "agentcursor",
+      "repository": "github.com/kumard3/agentcursor",
+      "directory": "/"
+    }
+  ]
+}
