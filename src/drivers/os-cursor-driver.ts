@@ -43,7 +43,7 @@ async function loadNut(): Promise<NutModule> {
     return (await import(spec)) as unknown as NutModule;
   } catch {
     throw new Error(
-      "The OS-cursor driver needs @nut-tree-fork/nut-js. Install it with: npm install @nut-tree-fork/nut-js",
+      "The OS-cursor driver needs @nut-tree-fork/nut-js. Install it with: pnpm add @nut-tree-fork/nut-js",
     );
   }
 }

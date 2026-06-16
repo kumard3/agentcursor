@@ -17,9 +17,9 @@ Thanks for your interest in AgentCursor.
 ## Before opening a PR
 
 ```bash
-npm run typecheck
-npm test
-npm run build
+pnpm typecheck
+pnpm test
+pnpm build
 ```
 
 - Keep the path engine covered by tests in `test/`.

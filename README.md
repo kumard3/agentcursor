@@ -57,8 +57,8 @@ endgame is the phase-2 OS cursor (genuine, trusted OS events).
 ```bash
 git clone <your-fork-url> agentcursor
 cd agentcursor
-npm install
-npm run build      # builds dist/index.js + extension/dist/*
+pnpm install
+pnpm build      # builds dist/index.js + extension/dist/*
 ```
 
 ### 1. Load the extension
@@ -117,7 +117,7 @@ OS-cursor driver, which moves the real macOS system cursor along the same human
 path:
 
 ```bash
-npm install @nut-tree-fork/nut-js        # optional native dependency
+pnpm add @nut-tree-fork/nut-js        # optional native dependency
 AGENTCURSOR_DRIVER=os node dist/index.js
 ```
 
@@ -129,19 +129,26 @@ multi-monitor / fractional-scaling setups is still rough.
 
 ## Measuring realism
 
-Open `test-detector/index.html` and click the targets by hand, then drive them
-with the agent. Each click is scored on straightness, velocity variance, dwell,
+Serve the detector over http (the extension's content script only runs on
+`http(s)`, not `file://`):
+
+```bash
+python3 -m http.server 8080 --directory test-detector
+```
+
+Open `http://localhost:8080`, click the targets by hand, then drive them with
+the agent. Each click is scored on straightness, velocity variance, dwell,
 off-center landing, overshoot, and `isTrusted` — the same features detectors
 use. Use it to tune the engine.
 
 ## Development
 
 ```bash
-npm run dev         # run the server with tsx (no build)
-npm run typecheck    # tsc --noEmit
-npm test             # vitest (path-engine + coord-map unit tests)
-npm run build:ext    # rebuild just the extension
-npm run smoke        # end-to-end run: real MCP client + server, simulated browser
+pnpm dev         # run the server with tsx (no build)
+pnpm typecheck    # tsc --noEmit
+pnpm test             # vitest (path-engine + coord-map unit tests)
+pnpm build:ext    # rebuild just the extension
+pnpm smoke        # end-to-end run: real MCP client + server, simulated browser
 ```
 
 ## Credits

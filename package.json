@@ -21,9 +21,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "npm run build:server && node scripts/smoke.mjs",
+    "smoke": "node build.mjs && node scripts/smoke.mjs",
     "dev": "tsx src/index.ts",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "keywords": [
     "mcp",
@@ -56,5 +56,9 @@
   },
   "optionalDependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6"
+  },
+  "packageManager": "pnpm@10.17.1",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }
