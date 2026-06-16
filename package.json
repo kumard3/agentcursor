@@ -23,6 +23,7 @@
     "test:watch": "vitest",
     "smoke": "node build.mjs && node scripts/smoke.mjs",
     "verify": "node scripts/verify-live.mjs",
+    "demo": "node scripts/demo-drive.mjs",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "pnpm run build"
   },
