@@ -96,7 +96,8 @@ export type Command =
       button: MouseButton;
       mode: DeliveryMode;
     }
-  | { kind: "waitFor"; ref?: string; text?: string; timeoutMs: number; condition?: "exists" | "visible" | "text" };
+  | { kind: "waitFor"; ref?: string; text?: string; timeoutMs: number; condition?: "exists" | "visible" | "text" }
+  | { kind: "pressKey"; key: string; mode: DeliveryMode };
 
 export interface CommandEnvelope {
   v: number;

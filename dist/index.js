@@ -182,6 +182,11 @@ function sampleKeyDelayMs(rng = createRng()) {
   return { min: Math.round(base * 0.6), max: Math.round(base * 1.8) };
 }
 
+// src/util/timing.ts
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+var sleepUntil = (perfTime) => sleep(perfTime - performance.now());
+var rand = (min, max) => min + Math.random() * (max - min);
+
 // src/action/service.ts
 var ActionService = class {
   constructor(driver2) {
@@ -283,6 +288,32 @@ var ActionService = class {
       mode: mode(stealth)
     });
   }
+  /** Identification: rank on-screen elements by how well their text/name matches a query. */
+  async find(text2, opts = {}) {
+    const snap = await this.readPage(200, true);
+    return rankByText(snap.elements, text2).slice(0, opts.maxResults ?? 8);
+  }
+  /** Identification + interaction: find the best text match, then human-click it (re-reading if needed). */
+  async clickText(text2, opts = {}) {
+    let matches = rankByText((await this.readPage(200, true)).elements, text2);
+    for (let attempt = 0; attempt < 2 && matches.length === 0; attempt++) {
+      await sleep(400);
+      matches = rankByText((await this.readPage(200, true)).elements, text2);
+    }
+    if (matches.length === 0) {
+      throw new Error(
+        `No element matching text "${text2}". Call read_page or screenshot to see what's on the page.`
+      );
+    }
+    const matched = matches[Math.min(opts.nth ?? 0, matches.length - 1)];
+    const point = await this.click({
+      ref: matched.ref,
+      stealth: opts.stealth,
+      button: opts.button,
+      double: opts.double
+    });
+    return { matched, point };
+  }
   async ensureStart() {
     if (this.lastPos) return this.lastPos;
     this.lastPos = await this.driver.cursorState();
@@ -325,6 +356,26 @@ var ActionService = class {
 };
 function mode(stealth) {
   return stealth ? "debugger" : "content";
+}
+function rankByText(elements, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const scored = [];
+  for (const el of elements) {
+    const name = (el.name ?? "").toLowerCase();
+    const val = (el.value ?? "").toLowerCase();
+    let score = 0;
+    if (name === q) score = 100;
+    else if (name.startsWith(q)) score = 80;
+    else if (name.includes(q)) score = 60;
+    else if (val.includes(q)) score = 40;
+    if (score === 0) continue;
+    if (el.visible) score += 5;
+    if (el.inViewport) score += 5;
+    scored.push({ el, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.el);
 }
 
 // src/drivers/extension-driver.ts
@@ -395,11 +446,6 @@ var ExtensionDriver = class {
     await this.transport.send({ kind: "drag", ...args }, 6e4);
   }
 };
-
-// src/util/timing.ts
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
-var sleepUntil = (perfTime) => sleep(perfTime - performance.now());
-var rand = (min, max) => min + Math.random() * (max - min);
 
 // src/drivers/coord-map.ts
 function chromeOffsets(g) {
@@ -651,6 +697,39 @@ function registerTools(server2, action2) {
     }
   );
   server2.registerTool(
+    "find",
+    {
+      description: "Identification: locate on-screen elements by their visible text or accessible name (shadow-DOM aware), the way a human scans a page. Returns ranked matches with [ref], role, and on-screen rect. Use when you don't already have a ref, then click/move_to/hover by [ref] \u2014 or use click_text to do it in one step.",
+      inputSchema: {
+        text: z.string(),
+        maxResults: z.number().int().min(1).max(20).optional()
+      }
+    },
+    async ({ text: query, maxResults }) => {
+      const matches = await action2.find(query, { maxResults });
+      if (!matches.length) return text(`No elements matching "${query}".`);
+      return text(matches.map(formatElement).join("\n"));
+    }
+  );
+  server2.registerTool(
+    "click_text",
+    {
+      description: "Identification + interaction in one step: find the element that best matches the given text/label, then human-move the cursor to it and click. Re-reads the page if the element isn't there yet. `nth` picks a later match, `stealth:true` delivers trusted events, `double` double-clicks.",
+      inputSchema: {
+        text: z.string(),
+        nth: z.number().int().min(0).optional(),
+        double: z.boolean().optional(),
+        stealth: z.boolean().optional()
+      }
+    },
+    async ({ text: query, nth, double, stealth }) => {
+      const { matched, point } = await action2.clickText(query, { nth, double, stealth });
+      return text(
+        `clicked "${matched.name || matched.ref}" [${matched.ref}] at (${point.x.toFixed(0)}, ${point.y.toFixed(0)})`
+      );
+    }
+  );
+  server2.registerTool(
     "move_to",
     {
       description: "Move the cursor to an element ([ref] from read_page) or to absolute viewport x/y along a human-like path. Does not click. stealth:true delivers trusted events via the debugger driver.",
@@ -873,6 +952,12 @@ function formatSnapshot(snap) {
 }
 function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n)}\u2026` : s;
+}
+function formatElement(e) {
+  const r = e.rect;
+  const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
+  const vp = e.inViewport === false ? " off-view" : "";
+  return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
 }
 
 // src/index.ts

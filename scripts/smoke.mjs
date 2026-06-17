@@ -116,6 +116,11 @@ async function main() {
   console.log(`screenshot → image ${shotImg?.mimeType ?? "?"} (${shotImg?.data?.length ?? 0} base64 chars)`);
   console.log(`status →\n${text(await client.callTool({ name: "status", arguments: {} }))}\n`);
 
+  const found = await client.callTool({ name: "find", arguments: { text: "Sign in" } });
+  console.log(`find "Sign in" → ${text(found).trim()}`);
+  const clickedText = await client.callTool({ name: "click_text", arguments: { text: "Sign in" } });
+  console.log(`click_text "Sign in" → ${text(clickedText)}\n`);
+
   console.log(`commands the browser received: ${captured.commands.join(", ")}`);
 
   const samples = captured.lastSamples ?? [];
@@ -126,6 +131,8 @@ async function main() {
     "timing starts at 0": samples[0]?.t === 0,
     "screenshot returned an image": !!(shotImg && shotImg.data),
     "server version matches package.json": serverInfo?.version === PKG_VERSION,
+    "find locates element by text": text(found).includes("e2"),
+    "click_text finds + clicks the match": text(clickedText).includes("e2"),
   };
 
   await client.close();

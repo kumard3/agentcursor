@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ActionService } from "../action/service";
-import type { PageSnapshot } from "../protocol";
+import type { PageElement, PageSnapshot } from "../protocol";
 
 function text(body: string) {
   return { content: [{ type: "text" as const, text: body }] };
@@ -21,6 +21,43 @@ export function registerTools(server: McpServer, action: ActionService): void {
     async ({ maxElements, includeText }) => {
       const snap = await action.readPage(maxElements ?? 60, includeText ?? true);
       return text(formatSnapshot(snap));
+    },
+  );
+
+  server.registerTool(
+    "find",
+    {
+      description:
+        "Identification: locate on-screen elements by their visible text or accessible name (shadow-DOM aware), the way a human scans a page. Returns ranked matches with [ref], role, and on-screen rect. Use when you don't already have a ref, then click/move_to/hover by [ref] — or use click_text to do it in one step.",
+      inputSchema: {
+        text: z.string(),
+        maxResults: z.number().int().min(1).max(20).optional(),
+      },
+    },
+    async ({ text: query, maxResults }) => {
+      const matches = await action.find(query, { maxResults });
+      if (!matches.length) return text(`No elements matching "${query}".`);
+      return text(matches.map(formatElement).join("\n"));
+    },
+  );
+
+  server.registerTool(
+    "click_text",
+    {
+      description:
+        "Identification + interaction in one step: find the element that best matches the given text/label, then human-move the cursor to it and click. Re-reads the page if the element isn't there yet. `nth` picks a later match, `stealth:true` delivers trusted events, `double` double-clicks.",
+      inputSchema: {
+        text: z.string(),
+        nth: z.number().int().min(0).optional(),
+        double: z.boolean().optional(),
+        stealth: z.boolean().optional(),
+      },
+    },
+    async ({ text: query, nth, double, stealth }) => {
+      const { matched, point } = await action.clickText(query, { nth, double, stealth });
+      return text(
+        `clicked "${matched.name || matched.ref}" [${matched.ref}] at (${point.x.toFixed(0)}, ${point.y.toFixed(0)})`,
+      );
     },
   );
 
@@ -271,4 +308,11 @@ function formatSnapshot(snap: PageSnapshot): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
+}
+
+function formatElement(e: PageElement): string {
+  const r = e.rect;
+  const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
+  const vp = e.inViewport === false ? " off-view" : "";
+  return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
 }

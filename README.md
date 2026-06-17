@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.2.7**: Identification tools — `find` (locate elements by visible text / accessible name, shadow-DOM aware) and `click_text` (find the best text match, then human-move + click, content or stealth, with a re-read retry). Target by what the element *says*, not by ref or pixel coords.
 - **0.2.6**: Stealth typing inserts the whole string in one `Input.insertText` call. Per-character insertion landed at a reset caret on controlled editors (X's Draft.js) and typed text backward.
 - **0.2.5**: Content-script `drag` reports the held button (`buttons` mask) during the move, matching the stealth and OS drivers, so JS drag handlers see a real drag. Added a Known Limitations section.
 - **0.2.4**: `read_page` resolves multi-ID `aria-labelledby` names (it was passing the whole space-separated list to `getElementById` as one ID, so those labels came back empty); now shadow-DOM-tree-scope aware.
@@ -135,6 +136,8 @@ This makes AgentCursor a solid foundation for your internal testing frameworks o
 | Tool | What it does |
 | --- | --- |
 | `read_page` | Interactive elements with stable `[ref]` handles, roles, rects, visible text. Call this first in almost every test or workflow. |
+| `find` | Identification: locate elements by their visible text / accessible name (shadow-DOM aware). Returns ranked `[ref]` matches — target by what the element says, no ref needed. |
+| `click_text` | Identification + interaction in one step: find the best text match and human-move + click it (re-reads if needed). Supports `nth`, `double`, `stealth`. |
 | `move_to` | Human-like path to a `[ref]` or `x/y` (no click). |
 | `click` | Full human move + click (supports button, double, stealth mode for trusted events). |
 | `hover` | Human approach + hover events (mouseover/mouseenter). Critical for dropdowns, tooltips, nav, and realistic workflows. |

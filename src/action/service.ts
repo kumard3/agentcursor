@@ -8,6 +8,7 @@ import {
   sampleKeyDelayMs,
   samplePressMs,
 } from "../path-engine";
+import { sleep } from "../util/timing";
 
 interface TargetOpts {
   ref?: string;
@@ -156,6 +157,37 @@ export class ActionService {
     });
   }
 
+  /** Identification: rank on-screen elements by how well their text/name matches a query. */
+  async find(text: string, opts: { maxResults?: number } = {}): Promise<PageElement[]> {
+    const snap = await this.readPage(200, true);
+    return rankByText(snap.elements, text).slice(0, opts.maxResults ?? 8);
+  }
+
+  /** Identification + interaction: find the best text match, then human-click it (re-reading if needed). */
+  async clickText(
+    text: string,
+    opts: { stealth?: boolean; nth?: number; button?: MouseButton; double?: boolean } = {},
+  ): Promise<{ matched: PageElement; point: Point }> {
+    let matches = rankByText((await this.readPage(200, true)).elements, text);
+    for (let attempt = 0; attempt < 2 && matches.length === 0; attempt++) {
+      await sleep(400);
+      matches = rankByText((await this.readPage(200, true)).elements, text);
+    }
+    if (matches.length === 0) {
+      throw new Error(
+        `No element matching text "${text}". Call read_page or screenshot to see what's on the page.`,
+      );
+    }
+    const matched = matches[Math.min(opts.nth ?? 0, matches.length - 1)]!;
+    const point = await this.click({
+      ref: matched.ref,
+      stealth: opts.stealth,
+      button: opts.button,
+      double: opts.double,
+    });
+    return { matched, point };
+  }
+
   private async ensureStart(): Promise<Point> {
     if (this.lastPos) return this.lastPos;
     this.lastPos = await this.driver.cursorState();
@@ -203,4 +235,26 @@ export class ActionService {
 
 function mode(stealth?: boolean): "content" | "debugger" {
   return stealth ? "debugger" : "content";
+}
+
+/** Rank elements by how well their accessible name / value matches a text query. */
+function rankByText(elements: PageElement[], query: string): PageElement[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const scored: Array<{ el: PageElement; score: number }> = [];
+  for (const el of elements) {
+    const name = (el.name ?? "").toLowerCase();
+    const val = (el.value ?? "").toLowerCase();
+    let score = 0;
+    if (name === q) score = 100;
+    else if (name.startsWith(q)) score = 80;
+    else if (name.includes(q)) score = 60;
+    else if (val.includes(q)) score = 40;
+    if (score === 0) continue;
+    if (el.visible) score += 5;
+    if (el.inViewport) score += 5;
+    scored.push({ el, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.el);
 }
