@@ -39,7 +39,7 @@
     "agent"
   ],
   "license": "MIT",
-  "author": "Deepanshu Kumar",
+  "author": "Kumar Deepanshu",
   "engines": {
     "node": ">=20"
   },
