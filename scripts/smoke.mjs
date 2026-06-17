@@ -2,6 +2,7 @@
 // while a simulated browser stands in for the extension at the WebSocket. This
 // exercises the full pipeline MCP -> server -> human-path engine -> driver -> WS.
 // A live Chrome with the unpacked extension is the only piece not covered here.
+import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { WebSocket } from "ws";
@@ -9,6 +10,9 @@ import { WebSocket } from "ws";
 const PORT = process.env.SMOKE_PORT ?? "8799";
 const WS_URL = `ws://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const PKG_VERSION = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+).version;
 
 const SNAPSHOT = {
   url: "https://example.com/login",
@@ -85,7 +89,8 @@ async function main() {
   });
   const client = new Client({ name: "agentcursor-smoke", version: "0.0.0" });
   await client.connect(transport);
-  console.log("✓ MCP client connected to server over stdio");
+  const serverInfo = client.getServerVersion();
+  console.log(`✓ MCP client connected to server over stdio (server ${serverInfo?.name} v${serverInfo?.version}, package.json ${PKG_VERSION})`);
 
   const ext = await connectFakeExtension();
   console.log("✓ simulated browser connected over WebSocket\n");
@@ -120,6 +125,7 @@ async function main() {
     "path is curved, not straight": straightnessOf(samples) < 0.999,
     "timing starts at 0": samples[0]?.t === 0,
     "screenshot returned an image": !!(shotImg && shotImg.data),
+    "server version matches package.json": serverInfo?.version === PKG_VERSION,
   };
 
   await client.close();

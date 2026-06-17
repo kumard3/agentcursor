@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 // src/index.ts
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -881,7 +882,16 @@ var driverKind = (process.env.AGENTCURSOR_DRIVER ?? "extension").toLowerCase();
 var wsTransport = new ExtensionTransport(port);
 var driver = driverKind === "os" ? new OsCursorDriver(wsTransport) : new ExtensionDriver(wsTransport);
 var action = new ActionService(driver);
-var server = new McpServer({ name: "agentcursor", version: "0.2.0" });
+function readVersion() {
+  try {
+    return JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8")
+    ).version;
+  } catch {
+    return "0.0.0";
+  }
+}
+var server = new McpServer({ name: "agentcursor", version: readVersion() });
 registerTools(server, action);
 await server.connect(new StdioServerTransport());
 process.stderr.write(

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ActionService } from "./action/service";
@@ -18,7 +19,17 @@ const driver: BrowserDriver =
     : new ExtensionDriver(wsTransport);
 const action = new ActionService(driver);
 
-const server = new McpServer({ name: "agentcursor", version: "0.2.0" });
+function readVersion(): string {
+  try {
+    return JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ).version as string;
+  } catch {
+    return "0.0.0";
+  }
+}
+
+const server = new McpServer({ name: "agentcursor", version: readVersion() });
 registerTools(server, action);
 
 await server.connect(new StdioServerTransport());
