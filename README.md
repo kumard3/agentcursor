@@ -217,6 +217,7 @@ multi-monitor / fractional-scaling setups is still rough.
 - **`wait_for` by text and the snapshot `text` field use `innerText`**, which does not pierce shadow DOM. `read_page`'s element list *does* traverse shadow roots, so prefer waiting on a `[ref]` over page text on web-component-heavy sites (X, Reddit).
 - **The OS-cursor driver assumes 100% browser zoom and a single display**; multi-monitor and fractional scaling can be off.
 - **`hover` dispatches its hover events through the content script** (the approach move is trusted under `stealth`, the explicit `mouseover`/`mouseenter` are not).
+- **Content-mode `press_key` carries `key`/`code` but not legacy `keyCode`** — a constructed `KeyboardEvent` always reports `keyCode: 0`. Modern handlers read `key`; for sites that still check `keyCode`/`which`, use `stealth: true` (the CDP key event sets the real virtual key code).
 
 ## Measuring realism
 
