@@ -1,21 +1,25 @@
 import { build } from "esbuild";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
-// Auto-bump the patch version each build so a reload's effect is visible in
-// chrome://extensions. manifest, package.json and plugin.json stay in lockstep.
-const files = [
-  "extension/manifest.json",
-  "package.json",
-  ".claude-plugin/plugin.json",
-];
-const manifest = JSON.parse(readFileSync(files[0], "utf8"));
-const [major, minor, patch] = manifest.version.split(".").map(Number);
-const next = `${major}.${minor}.${(patch ?? 0) + 1}`;
-for (const f of files) {
-  const src = readFileSync(f, "utf8");
-  writeFileSync(f, src.replace(/("version":\s*")[^"]+(")/, `$1${next}$2`));
+// `pnpm reload` (AGENTCURSOR_BUMP=1) patch-bumps manifest + package.json +
+// plugin.json in lockstep so a chrome://extensions reload is visibly new.
+// A plain `pnpm build` leaves versions untouched, so CI and contributors get
+// a clean tree.
+if (process.env.AGENTCURSOR_BUMP) {
+  const files = [
+    "extension/manifest.json",
+    "package.json",
+    ".claude-plugin/plugin.json",
+  ];
+  const manifest = JSON.parse(readFileSync(files[0], "utf8"));
+  const [major, minor, patch] = manifest.version.split(".").map(Number);
+  const next = `${major}.${minor}.${(patch ?? 0) + 1}`;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    writeFileSync(f, src.replace(/("version":\s*")[^"]+(")/, `$1${next}$2`));
+  }
+  console.log(`version → ${next}`);
 }
-console.log(`version → ${next}`);
 
 mkdirSync("extension/dist", { recursive: true });
 
