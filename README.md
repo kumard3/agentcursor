@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.2.2**: `drag` tool. `screenshot` now returns a viewport-scaled image (1 image pixel = 1 click coordinate) for a vision loop — see the page, then `click`/`move_to` by `x/y`. Stealth (`chrome.debugger`) moves also animate the visible overlay, so the cursor stays on screen. Ships as a Claude Code plugin. Internal snapshot refresh resolves refs past the 60th element. `pnpm build` no longer mutates version files (use `pnpm reload` for the extension dev loop).
 - **0.2.0**: Added `screenshot`, `hover`, `status` MCP tools. Deep shadow DOM traversal in `read_page` / snapshot (critical for X.com, Reddit, modern SPAs). Library re-exports for programmatic use. Repositioned as general local automation/testing/workflow tool over MCP. Version bumps and packaging polish.
 - 0.1.0: Initial MCP server, human path engine, extension bridge, OS cursor driver, basic tools (read_page, click, type, etc.).
 
@@ -136,7 +137,7 @@ This makes AgentCursor a solid foundation for your internal testing frameworks o
 | `drag` | Human path drag from ref/coords to target while holding button (sliders, reorder, canvas). |
 | `type` | Human-timed keystrokes (auto human-clicks ref to focus if provided). |
 | `scroll` | Eased, human-stepped scrolling. |
-| `screenshot` | Capture current visible tab as PNG/JPEG data URL. Essential for visual assertions in tests, agent grounding, and debugging automation. |
+| `screenshot` | Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate — see the page, then `click`/`move_to` by `x/y` (the vision loop). Also for visual assertions and agent grounding. |
 | `navigate` | Load a URL in the active tab. |
 | `get_url` | Current tab URL. |
 | `wait_for` | Wait for element ref or visible text (up to timeout). Use for resilient testing flows. |
@@ -220,7 +221,8 @@ use. Use it to tune the engine.
 pnpm dev         # run the server with tsx (no build)
 pnpm typecheck    # tsc --noEmit
 pnpm test             # vitest (path-engine + coord-map unit tests)
-pnpm build:ext    # rebuild just the extension
+pnpm build:ext    # rebuild just the extension (no version change)
+pnpm reload       # rebuild the extension AND patch-bump the version, so a chrome://extensions reload is visibly new
 pnpm smoke        # end-to-end run: real MCP client + server, simulated browser (now covers screenshot/hover/status too)
 ```
 
