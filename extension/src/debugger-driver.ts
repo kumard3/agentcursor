@@ -128,11 +128,10 @@ export class DebuggerDriver {
     });
   }
 
-  private async type(tabId: number, text: string, min: number, max: number): Promise<void> {
-    for (const ch of text) {
-      await this.send(tabId, "Input.insertText", { text: ch });
-      await sleep(rand(min, max));
-    }
+  private async type(tabId: number, text: string, _min: number, _max: number): Promise<void> {
+    // Insert the whole string in one call. Per-char insertText lands at a reset
+    // caret on controlled editors (X's Draft.js) and types the text backward.
+    await this.send(tabId, "Input.insertText", { text });
   }
 
   private async scroll(tabId: number, dx: number, dy: number, steps: number): Promise<void> {

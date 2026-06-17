@@ -110,11 +110,8 @@ var DebuggerDriver = class {
       clickCount
     });
   }
-  async type(tabId, text, min, max) {
-    for (const ch of text) {
-      await this.send(tabId, "Input.insertText", { text: ch });
-      await sleep(rand(min, max));
-    }
+  async type(tabId, text, _min, _max) {
+    await this.send(tabId, "Input.insertText", { text });
   }
   async scroll(tabId, dx, dy, steps) {
     const count = Math.max(1, steps);

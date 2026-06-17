@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.2.6**: Stealth typing inserts the whole string in one `Input.insertText` call. Per-character insertion landed at a reset caret on controlled editors (X's Draft.js) and typed text backward.
 - **0.2.5**: Content-script `drag` reports the held button (`buttons` mask) during the move, matching the stealth and OS drivers, so JS drag handlers see a real drag. Added a Known Limitations section.
 - **0.2.4**: `read_page` resolves multi-ID `aria-labelledby` names (it was passing the whole space-separated list to `getElementById` as one ID, so those labels came back empty); now shadow-DOM-tree-scope aware.
 - **0.2.3**: `drag` now performs a real drag (press at the start, move with the button held, release at the end) in the stealth (`chrome.debugger`) and OS-cursor drivers — previously a move-then-click. `pnpm smoke` asserts the `screenshot` image content.
