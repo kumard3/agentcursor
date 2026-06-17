@@ -138,14 +138,16 @@ export function registerTools(server: McpServer, action: ActionService): void {
     "screenshot",
     {
       description:
-        "Capture a screenshot of the currently visible tab (PNG data URL by default). Critical for testing, visual verification, debugging workflows, and letting agents 'see' page state after actions.",
+        "Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate. SEE the page, then click(x,y)/move_to(x,y) at coordinates read off the image. This is the vision loop (screenshot -> decide coords -> click -> screenshot) and needs no DOM refs.",
       inputSchema: {
         format: z.enum(["png", "jpeg"]).optional(),
       },
     },
     async ({ format }) => {
       const dataUrl = await action.screenshot(format ?? "png");
-      return text(dataUrl);
+      const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(dataUrl);
+      if (!m) return text(dataUrl);
+      return { content: [{ type: "image" as const, data: m[2]!, mimeType: m[1]! }] };
     },
   );
 

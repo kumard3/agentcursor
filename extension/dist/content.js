@@ -95,6 +95,9 @@
       case "drag":
         await replayDrag(cmd.samples, cmd.target, cmd.button);
         return null;
+      case "showCursorPath":
+        await showCursorPath(cmd.samples);
+        return null;
       default:
         throw new Error(`content script cannot handle '${cmd.kind}'`);
     }
@@ -111,6 +114,13 @@
       const target = document.elementFromPoint(s.x, s.y) ?? document.documentElement;
       firePointer(target, "pointermove", s.x, s.y, 0);
       fireMouse(target, "mousemove", s.x, s.y, 0);
+    }
+  }
+  async function showCursorPath(samples) {
+    const start = performance.now();
+    for (const s of samples) {
+      await sleepUntil(start + s.t);
+      overlay.moveTo(s.x, s.y);
     }
   }
   async function replayClick(samples, target, button, dblclick, preClickDwellMs, pressMs) {

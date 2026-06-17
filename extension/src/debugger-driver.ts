@@ -1,4 +1,4 @@
-import type { Command, CursorSample, MouseButton, Point } from "../../src/protocol";
+import { PROTOCOL_VERSION, type Command, type CursorSample, type MouseButton, type Point } from "../../src/protocol";
 import { rand, sleep, sleepUntil } from "./timing";
 
 function cdpButtonsMask(button: MouseButton): number {
@@ -65,7 +65,19 @@ export class DebuggerDriver {
     return chrome.debugger.sendCommand({ tabId }, method, params);
   }
 
+  // Animate the visible overlay in the page while CDP delivers trusted input.
+  private showCursor(tabId: number, samples: CursorSample[]): void {
+    chrome.tabs
+      .sendMessage(tabId, {
+        v: PROTOCOL_VERSION,
+        id: "",
+        command: { kind: "showCursorPath", samples },
+      })
+      .catch(() => undefined);
+  }
+
   private async move(tabId: number, samples: CursorSample[]): Promise<void> {
+    this.showCursor(tabId, samples);
     const start = performance.now();
     for (const s of samples) {
       await sleepUntil(start + s.t);

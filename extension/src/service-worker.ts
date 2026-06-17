@@ -92,7 +92,15 @@ async function route(cmd: Command): Promise<unknown> {
   if (cmd.kind === "screenshot") {
     const format = cmd.format ?? "png";
     const dataUrl = await chrome.tabs.captureVisibleTab({ format });
-    return dataUrl;
+    try {
+      const geom = (await sendToContent(tabId, { kind: "windowGeometry" })) as {
+        innerWidth: number;
+        innerHeight: number;
+      };
+      return await scaleToViewport(dataUrl, geom.innerWidth, geom.innerHeight, format);
+    } catch {
+      return dataUrl;
+    }
   }
   if (cmd.kind === "hover" || cmd.kind === "ensureVisible") {
     // Hover and ensureVisible go via content (for DOM scrollIntoView + events)
@@ -112,6 +120,30 @@ function isDrive(cmd: Command): cmd is DriveCommand {
     cmd.kind === "scroll" ||
     cmd.kind === "drag"
   );
+}
+
+// Downscale the device-pixel capture to CSS viewport size so 1 image pixel == 1 click coordinate.
+async function scaleToViewport(
+  dataUrl: string,
+  w: number,
+  h: number,
+  format: "png" | "jpeg",
+): Promise<string> {
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return dataUrl;
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  const mime = format === "jpeg" ? "image/jpeg" : "image/png";
+  const out = await canvas.convertToBlob({ type: mime });
+  const bytes = new Uint8Array(await out.arrayBuffer());
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return `data:${mime};base64,${btoa(bin)}`;
 }
 
 async function sendToContent(tabId: number, cmd: Command): Promise<unknown> {

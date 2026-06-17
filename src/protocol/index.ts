@@ -88,6 +88,7 @@ export type Command =
   | { kind: "screenshot"; format?: "png" | "jpeg" }
   | { kind: "hover"; ref?: string; x?: number; y?: number; mode?: DeliveryMode }
   | { kind: "ensureVisible"; ref?: string; point?: Point }
+  | { kind: "showCursorPath"; samples: CursorSample[] }
   | {
       kind: "drag";
       samples: CursorSample[];

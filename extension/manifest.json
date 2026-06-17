@@ -1,10 +1,18 @@
 {
   "manifest_version": 3,
   "name": "AgentCursor",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Human-like cursor automation bridge for coding agents over MCP.",
-  "permissions": ["tabs", "activeTab", "scripting", "debugger", "alarms"],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting",
+    "debugger",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -16,8 +24,13 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["dist/content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "dist/content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

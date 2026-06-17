@@ -31,7 +31,7 @@ export class ActionService {
 
   constructor(private readonly driver: BrowserDriver) {}
 
-  async readPage(maxElements = 60, includeText = true): Promise<PageSnapshot> {
+  async readPage(maxElements = 200, includeText = true): Promise<PageSnapshot> {
     this.snapshot = await this.driver.snapshot(maxElements, includeText);
     return this.snapshot;
   }

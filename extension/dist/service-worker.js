@@ -60,7 +60,16 @@ var DebuggerDriver = class {
   send(tabId, method, params) {
     return chrome.debugger.sendCommand({ tabId }, method, params);
   }
+  // Animate the visible overlay in the page while CDP delivers trusted input.
+  showCursor(tabId, samples) {
+    chrome.tabs.sendMessage(tabId, {
+      v: PROTOCOL_VERSION,
+      id: "",
+      command: { kind: "showCursorPath", samples }
+    }).catch(() => void 0);
+  }
   async move(tabId, samples) {
+    this.showCursor(tabId, samples);
     const start = performance.now();
     for (const s of samples) {
       await sleepUntil(start + s.t);
@@ -203,7 +212,12 @@ async function route(cmd) {
   if (cmd.kind === "screenshot") {
     const format = cmd.format ?? "png";
     const dataUrl = await chrome.tabs.captureVisibleTab({ format });
-    return dataUrl;
+    try {
+      const geom = await sendToContent(tabId, { kind: "windowGeometry" });
+      return await scaleToViewport(dataUrl, geom.innerWidth, geom.innerHeight, format);
+    } catch {
+      return dataUrl;
+    }
   }
   if (cmd.kind === "hover" || cmd.kind === "ensureVisible") {
     return sendToContent(tabId, cmd);
@@ -215,6 +229,23 @@ async function route(cmd) {
 }
 function isDrive(cmd) {
   return cmd.kind === "replayMove" || cmd.kind === "replayClick" || cmd.kind === "type" || cmd.kind === "scroll" || cmd.kind === "drag";
+}
+async function scaleToViewport(dataUrl, w, h, format) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return dataUrl;
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  const mime = format === "jpeg" ? "image/jpeg" : "image/png";
+  const out = await canvas.convertToBlob({ type: mime });
+  const bytes = new Uint8Array(await out.arrayBuffer());
+  let bin = "";
+  const CHUNK = 32768;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return `data:${mime};base64,${btoa(bin)}`;
 }
 async function sendToContent(tabId, cmd) {
   const env = { v: PROTOCOL_VERSION, id: "", command: cmd };

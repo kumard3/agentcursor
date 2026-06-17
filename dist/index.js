@@ -189,7 +189,7 @@ var ActionService = class {
   driver;
   snapshot = null;
   lastPos = null;
-  async readPage(maxElements = 60, includeText = true) {
+  async readPage(maxElements = 200, includeText = true) {
     this.snapshot = await this.driver.snapshot(maxElements, includeText);
     return this.snapshot;
   }
@@ -738,14 +738,16 @@ function registerTools(server2, action2) {
   server2.registerTool(
     "screenshot",
     {
-      description: "Capture a screenshot of the currently visible tab (PNG data URL by default). Critical for testing, visual verification, debugging workflows, and letting agents 'see' page state after actions.",
+      description: "Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate. SEE the page, then click(x,y)/move_to(x,y) at coordinates read off the image. This is the vision loop (screenshot -> decide coords -> click -> screenshot) and needs no DOM refs.",
       inputSchema: {
         format: z.enum(["png", "jpeg"]).optional()
       }
     },
     async ({ format }) => {
       const dataUrl = await action2.screenshot(format ?? "png");
-      return text(dataUrl);
+      const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(dataUrl);
+      if (!m) return text(dataUrl);
+      return { content: [{ type: "image", data: m[2], mimeType: m[1] }] };
     }
   );
   server2.registerTool(

@@ -65,6 +65,9 @@ async function handle(cmd: Command): Promise<unknown> {
     case "drag":
       await replayDrag(cmd.samples, cmd.target, cmd.button);
       return null;
+    case "showCursorPath":
+      await showCursorPath(cmd.samples);
+      return null;
     default:
       throw new Error(`content script cannot handle '${cmd.kind}'`);
   }
@@ -83,6 +86,15 @@ async function replayMove(samples: CursorSample[]): Promise<void> {
     const target = document.elementFromPoint(s.x, s.y) ?? document.documentElement;
     firePointer(target, "pointermove", s.x, s.y, 0);
     fireMouse(target, "mousemove", s.x, s.y, 0);
+  }
+}
+
+// Visual-only overlay glide for stealth mode; CDP delivers the real events.
+async function showCursorPath(samples: CursorSample[]): Promise<void> {
+  const start = performance.now();
+  for (const s of samples) {
+    await sleepUntil(start + s.t);
+    overlay.moveTo(s.x, s.y);
   }
 }
 
