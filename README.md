@@ -62,7 +62,7 @@ endgame is the phase-2 OS cursor (genuine, trusted OS events).
 ## Install
 
 ```bash
-git clone <your-fork-url> agentcursor
+git clone https://github.com/kumard3/agentcursor.git
 cd agentcursor
 pnpm install
 pnpm build      # builds dist/index.js + extension/dist/*
