@@ -107,7 +107,8 @@ async function main() {
   console.log(`get_url → ${text(await client.callTool({ name: "get_url", arguments: {} }))}`);
   console.log(`wait_for → ${text(await client.callTool({ name: "wait_for", arguments: { text: "Sign in" } }))}`);
   const shot = await client.callTool({ name: "screenshot", arguments: {} });
-  console.log(`screenshot → received data URL (length ${text(shot).length})`);
+  const shotImg = shot.content?.find((c) => c.type === "image");
+  console.log(`screenshot → image ${shotImg?.mimeType ?? "?"} (${shotImg?.data?.length ?? 0} base64 chars)`);
   console.log(`status →\n${text(await client.callTool({ name: "status", arguments: {} }))}\n`);
 
   console.log(`commands the browser received: ${captured.commands.join(", ")}`);
@@ -118,7 +119,7 @@ async function main() {
     "cursor path generated": samples.length > 8,
     "path is curved, not straight": straightnessOf(samples) < 0.999,
     "timing starts at 0": samples[0]?.t === 0,
-    "screenshot returned data": text(shot).startsWith("data:image"),
+    "screenshot returned an image": !!(shotImg && shotImg.data),
   };
 
   await client.close();
