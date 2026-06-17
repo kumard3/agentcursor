@@ -106,14 +106,15 @@
     const p = overlay.pos;
     return p.x || p.y ? p : { x: innerWidth / 2, y: innerHeight / 2 };
   }
-  async function replayMove(samples) {
+  async function replayMove(samples, heldButton) {
     const start = performance.now();
+    const heldMask = heldButton != null ? buttonsMask(heldButton) : 0;
     for (const s of samples) {
       await sleepUntil(start + s.t);
       overlay.moveTo(s.x, s.y);
       const target = document.elementFromPoint(s.x, s.y) ?? document.documentElement;
-      firePointer(target, "pointermove", s.x, s.y, 0);
-      fireMouse(target, "mousemove", s.x, s.y, 0);
+      firePointer(target, "pointermove", s.x, s.y, 0, heldMask);
+      fireMouse(target, "mousemove", s.x, s.y, 0, 0, heldMask);
     }
   }
   async function showCursorPath(samples) {
@@ -256,7 +257,7 @@
     const elStart = document.elementFromPoint(samples[0]?.x || 0, samples[0]?.y || 0) ?? document.body;
     const b = buttonIndex(button);
     pressSequence(elStart, samples[0] || target, b, 50);
-    await replayMove(samples);
+    await replayMove(samples, b);
     const elEnd = document.elementFromPoint(target.x, target.y) ?? document.body;
     releaseSequence(elEnd, target, b, 1);
   }
@@ -430,7 +431,7 @@
   function buttonsMask(button) {
     return button === 2 ? 2 : button === 1 ? 4 : 1;
   }
-  function fireMouse(target, type, x, y, button, detail = 0) {
+  function fireMouse(target, type, x, y, button, detail = 0, buttonsOverride) {
     target.dispatchEvent(
       new MouseEvent(type, {
         clientX: x,
@@ -438,7 +439,7 @@
         screenX: x,
         screenY: y,
         button,
-        buttons: type === "mousedown" ? buttonsMask(button) : 0,
+        buttons: buttonsOverride ?? (type === "mousedown" ? buttonsMask(button) : 0),
         detail,
         bubbles: true,
         cancelable: true,
@@ -447,7 +448,7 @@
       })
     );
   }
-  function firePointer(target, type, x, y, button) {
+  function firePointer(target, type, x, y, button, buttonsOverride) {
     target.dispatchEvent(
       new PointerEvent(type, {
         clientX: x,
@@ -455,7 +456,7 @@
         screenX: x,
         screenY: y,
         button: type === "pointermove" ? -1 : button,
-        buttons: type === "pointerdown" ? buttonsMask(button) : 0,
+        buttons: buttonsOverride ?? (type === "pointerdown" ? buttonsMask(button) : 0),
         pointerType: "mouse",
         isPrimary: true,
         bubbles: true,

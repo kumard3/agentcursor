@@ -78,14 +78,15 @@ function cursorState(): Point {
   return p.x || p.y ? p : { x: innerWidth / 2, y: innerHeight / 2 };
 }
 
-async function replayMove(samples: CursorSample[]): Promise<void> {
+async function replayMove(samples: CursorSample[], heldButton?: number): Promise<void> {
   const start = performance.now();
+  const heldMask = heldButton != null ? buttonsMask(heldButton) : 0;
   for (const s of samples) {
     await sleepUntil(start + s.t);
     overlay.moveTo(s.x, s.y);
     const target = document.elementFromPoint(s.x, s.y) ?? document.documentElement;
-    firePointer(target, "pointermove", s.x, s.y, 0);
-    fireMouse(target, "mousemove", s.x, s.y, 0);
+    firePointer(target, "pointermove", s.x, s.y, 0, heldMask);
+    fireMouse(target, "mousemove", s.x, s.y, 0, 0, heldMask);
   }
 }
 
@@ -266,7 +267,7 @@ async function replayDrag(
   const elStart = document.elementFromPoint(samples[0]?.x || 0, samples[0]?.y || 0) ?? document.body;
   const b = buttonIndex(button);
   pressSequence(elStart, samples[0] || target, b, 50);
-  await replayMove(samples); // the path with button held
+  await replayMove(samples, b); // the path with the button held down
   const elEnd = document.elementFromPoint(target.x, target.y) ?? document.body;
   releaseSequence(elEnd, target, b, 1);
 }
@@ -489,7 +490,7 @@ function buttonsMask(button: number): number {
   return button === 2 ? 2 : button === 1 ? 4 : 1;
 }
 
-function fireMouse(target: Element, type: string, x: number, y: number, button: number, detail = 0): void {
+function fireMouse(target: Element, type: string, x: number, y: number, button: number, detail = 0, buttonsOverride?: number): void {
   target.dispatchEvent(
     new MouseEvent(type, {
       clientX: x,
@@ -497,7 +498,7 @@ function fireMouse(target: Element, type: string, x: number, y: number, button: 
       screenX: x,
       screenY: y,
       button,
-      buttons: type === "mousedown" ? buttonsMask(button) : 0,
+      buttons: buttonsOverride ?? (type === "mousedown" ? buttonsMask(button) : 0),
       detail,
       bubbles: true,
       cancelable: true,
@@ -507,7 +508,7 @@ function fireMouse(target: Element, type: string, x: number, y: number, button: 
   );
 }
 
-function firePointer(target: Element, type: string, x: number, y: number, button: number): void {
+function firePointer(target: Element, type: string, x: number, y: number, button: number, buttonsOverride?: number): void {
   target.dispatchEvent(
     new PointerEvent(type, {
       clientX: x,
@@ -515,7 +516,7 @@ function firePointer(target: Element, type: string, x: number, y: number, button
       screenX: x,
       screenY: y,
       button: type === "pointermove" ? -1 : button,
-      buttons: type === "pointerdown" ? buttonsMask(button) : 0,
+      buttons: buttonsOverride ?? (type === "pointerdown" ? buttonsMask(button) : 0),
       pointerType: "mouse",
       isPrimary: true,
       bubbles: true,

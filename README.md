@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.2.5**: Content-script `drag` reports the held button (`buttons` mask) during the move, matching the stealth and OS drivers, so JS drag handlers see a real drag. Added a Known Limitations section.
 - **0.2.4**: `read_page` resolves multi-ID `aria-labelledby` names (it was passing the whole space-separated list to `getElementById` as one ID, so those labels came back empty); now shadow-DOM-tree-scope aware.
 - **0.2.3**: `drag` now performs a real drag (press at the start, move with the button held, release at the end) in the stealth (`chrome.debugger`) and OS-cursor drivers — previously a move-then-click. `pnpm smoke` asserts the `screenshot` image content.
 - **0.2.2**: `drag` tool. `screenshot` now returns a viewport-scaled image (1 image pixel = 1 click coordinate) for a vision loop — see the page, then `click`/`move_to` by `x/y`. Stealth (`chrome.debugger`) moves also animate the visible overlay, so the cursor stays on screen. Ships as a Claude Code plugin. Internal snapshot refresh resolves refs past the 60th element. `pnpm build` no longer mutates version files (use `pnpm reload` for the extension dev loop).
@@ -202,6 +203,14 @@ every move/click/scroll becomes a real OS event. Requires the Chrome window
 visible and foregrounded at 100% zoom, and Accessibility permission for your
 terminal/Node in System Settings → Privacy & Security. Coordinate mapping for
 multi-monitor / fractional-scaling setups is still rough.
+
+## Known limitations
+
+- **Content-script events are `isTrusted=false`.** For detection-sensitive sites pass `stealth: true` (the `chrome.debugger` driver, trusted events) or use the OS-cursor driver. The visible overlay cursor shows in every mode.
+- **React-controlled inputs** (X's composer, some design systems) can ignore content-script typing, which sets `value` directly. Use `stealth: true` (CDP `Input.insertText`) or the OS driver there.
+- **`wait_for` by text and the snapshot `text` field use `innerText`**, which does not pierce shadow DOM. `read_page`'s element list *does* traverse shadow roots, so prefer waiting on a `[ref]` over page text on web-component-heavy sites (X, Reddit).
+- **The OS-cursor driver assumes 100% browser zoom and a single display**; multi-monitor and fractional scaling can be off.
+- **`hover` dispatches its hover events through the content script** (the approach move is trusted under `stealth`, the explicit `mouseover`/`mouseenter` are not).
 
 ## Measuring realism
 
