@@ -409,14 +409,17 @@ function getBetterName(el: Element): string {
   const aria = el.getAttribute("aria-label");
   if (aria) return aria.trim();
 
-  // aria-labelledby
+  // aria-labelledby — a space-separated list of IDs, resolved in the element's tree scope.
   const labelledBy = el.getAttribute("aria-labelledby");
   if (labelledBy) {
-    const labelEl = document.getElementById(labelledBy);
-    if (labelEl) {
-      const labelText = (labelEl.textContent ?? "").trim().replace(/\s+/g, " ");
-      if (labelText) return labelText.slice(0, 80);
-    }
+    const root = el.getRootNode() as Document | ShadowRoot;
+    const labelText = labelledBy
+      .split(/\s+/)
+      .map((id) => root.getElementById?.(id)?.textContent ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (labelText) return labelText.slice(0, 80);
   }
 
   // data-testid (common in tests and modern apps)

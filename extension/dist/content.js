@@ -374,11 +374,9 @@
     if (aria) return aria.trim();
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
-      const labelEl = document.getElementById(labelledBy);
-      if (labelEl) {
-        const labelText = (labelEl.textContent ?? "").trim().replace(/\s+/g, " ");
-        if (labelText) return labelText.slice(0, 80);
-      }
+      const root = el.getRootNode();
+      const labelText = labelledBy.split(/\s+/).map((id) => root.getElementById?.(id)?.textContent ?? "").join(" ").replace(/\s+/g, " ").trim();
+      if (labelText) return labelText.slice(0, 80);
     }
     const testId = el.getAttribute("data-testid") || el.getAttribute("data-test-id");
     if (testId) return testId;

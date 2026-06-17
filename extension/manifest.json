@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AgentCursor",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Human-like cursor automation bridge for coding agents over MCP.",
   "permissions": [
     "tabs",
