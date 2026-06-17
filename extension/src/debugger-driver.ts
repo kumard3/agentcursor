@@ -150,12 +150,23 @@ export class DebuggerDriver {
   }
 
   private async drag(tabId: number, samples: CursorSample[], target: Point, button: MouseButton): Promise<void> {
-    // DRY with click: press, move samples, release (for drag while holding)
-    if (samples.length > 0) {
-      await this.move(tabId, samples);
+    // Real drag: press at the start, move the path with the button held, release at the end.
+    const start = samples[0] ?? target;
+    this.showCursor(tabId, samples);
+    await this.press(tabId, start, button, 1);
+    const buttons = cdpButtonsMask(button);
+    const t0 = performance.now();
+    for (const s of samples) {
+      await sleepUntil(t0 + s.t);
+      await this.send(tabId, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: s.x,
+        y: s.y,
+        button,
+        buttons,
+      });
     }
-    await this.press(tabId, target, button, 1);
-    await sleep(50);
+    await sleep(rand(40, 90));
     await this.release(tabId, target, button, 1);
   }
 }

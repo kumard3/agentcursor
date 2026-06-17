@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.2.3**: `drag` now performs a real drag (press at the start, move with the button held, release at the end) in the stealth (`chrome.debugger`) and OS-cursor drivers — previously a move-then-click. `pnpm smoke` asserts the `screenshot` image content.
 - **0.2.2**: `drag` tool. `screenshot` now returns a viewport-scaled image (1 image pixel = 1 click coordinate) for a vision loop — see the page, then `click`/`move_to` by `x/y`. Stealth (`chrome.debugger`) moves also animate the visible overlay, so the cursor stays on screen. Ships as a Claude Code plugin. Internal snapshot refresh resolves refs past the 60th element. `pnpm build` no longer mutates version files (use `pnpm reload` for the extension dev loop).
 - **0.2.0**: Added `screenshot`, `hover`, `status` MCP tools. Deep shadow DOM traversal in `read_page` / snapshot (critical for X.com, Reddit, modern SPAs). Library re-exports for programmatic use. Repositioned as general local automation/testing/workflow tool over MCP. Version bumps and packaging polish.
 - 0.1.0: Initial MCP server, human path engine, extension bridge, OS cursor driver, basic tools (read_page, click, type, etc.).

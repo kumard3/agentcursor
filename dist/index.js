@@ -471,7 +471,18 @@ var OsCursorDriver = class {
     });
   }
   async drag(args) {
+    const nut = await this.ensureNut();
+    const g = await this.geometry();
+    const first = args.samples[0];
+    if (!first) return;
+    const button = nutButton(nut, args.button);
+    const startScreen = viewportToScreen(first, g);
+    await nut.mouse.setPosition(new nut.Point(startScreen.x, startScreen.y));
+    await nut.mouse.pressButton(button);
+    await sleep(rand(40, 90));
     await this.move(args.samples, args.mode);
+    await sleep(rand(40, 90));
+    await nut.mouse.releaseButton(button);
   }
   async cursorState() {
     const nut = await this.ensureNut();
