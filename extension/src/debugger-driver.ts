@@ -5,6 +5,23 @@ function cdpButtonsMask(button: MouseButton): number {
   return button === "right" ? 2 : button === "middle" ? 4 : 1;
 }
 
+const CDP_KEYS: Record<string, { code: string; vk: number }> = {
+  Enter: { code: "Enter", vk: 13 },
+  Escape: { code: "Escape", vk: 27 },
+  Tab: { code: "Tab", vk: 9 },
+  Backspace: { code: "Backspace", vk: 8 },
+  Delete: { code: "Delete", vk: 46 },
+  ArrowUp: { code: "ArrowUp", vk: 38 },
+  ArrowDown: { code: "ArrowDown", vk: 40 },
+  ArrowLeft: { code: "ArrowLeft", vk: 37 },
+  ArrowRight: { code: "ArrowRight", vk: 39 },
+  Home: { code: "Home", vk: 36 },
+  End: { code: "End", vk: 35 },
+  PageUp: { code: "PageUp", vk: 33 },
+  PageDown: { code: "PageDown", vk: 34 },
+  " ": { code: "Space", vk: 32 },
+};
+
 /**
  * Delivers input via chrome.debugger / CDP so events arrive with
  * isTrusted=true. Shows the "debugging this browser" banner while attached.
@@ -32,6 +49,9 @@ export class DebuggerDriver {
           return null;
         case "drag":
           await this.drag(tabId, cmd.samples, cmd.target, cmd.button);
+          return null;
+        case "pressKey":
+          await this.pressKey(tabId, cmd.key);
           return null;
         default:
           throw new Error(`debugger driver cannot handle '${cmd.kind}'`);
@@ -167,5 +187,18 @@ export class DebuggerDriver {
     }
     await sleep(rand(40, 90));
     await this.release(tabId, target, button, 1);
+  }
+
+  private async pressKey(tabId: number, key: string): Promise<void> {
+    const info = CDP_KEYS[key] ?? { code: key, vk: 0 };
+    for (const type of ["rawKeyDown", "keyUp"] as const) {
+      await this.send(tabId, "Input.dispatchKeyEvent", {
+        type,
+        key,
+        code: info.code,
+        windowsVirtualKeyCode: info.vk,
+        nativeVirtualKeyCode: info.vk,
+      });
+    }
   }
 }

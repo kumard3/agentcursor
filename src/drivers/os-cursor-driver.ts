@@ -121,6 +121,11 @@ export class OsCursorDriver implements BrowserDriver {
     await nut.mouse.releaseButton(button);
   }
 
+  async pressKey(key: string, mode: DeliveryMode): Promise<void> {
+    // Keys go through the extension bridge (content or debugger), same as hover.
+    await this.transport.send({ kind: "pressKey", key, mode });
+  }
+
   async cursorState(): Promise<Point> {
     const nut = await this.ensureNut();
     const pos = await nut.mouse.getPosition();

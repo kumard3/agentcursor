@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.2.8**: Interaction: `press_key` — press Enter / Escape / Tab / arrows / Home / End / etc. on the focused element, content or stealth (trusted CDP key event). Rounds out the Comet-style action set: Navigation, Identification, Interaction.
 - **0.2.7**: Identification tools — `find` (locate elements by visible text / accessible name, shadow-DOM aware) and `click_text` (find the best text match, then human-move + click, content or stealth, with a re-read retry). Target by what the element *says*, not by ref or pixel coords.
 - **0.2.6**: Stealth typing inserts the whole string in one `Input.insertText` call. Per-character insertion landed at a reset caret on controlled editors (X's Draft.js) and typed text backward.
 - **0.2.5**: Content-script `drag` reports the held button (`buttons` mask) during the move, matching the stealth and OS drivers, so JS drag handlers see a real drag. Added a Known Limitations section.
@@ -143,6 +144,7 @@ This makes AgentCursor a solid foundation for your internal testing frameworks o
 | `hover` | Human approach + hover events (mouseover/mouseenter). Critical for dropdowns, tooltips, nav, and realistic workflows. |
 | `drag` | Human path drag from ref/coords to target while holding button (sliders, reorder, canvas). |
 | `type` | Human-timed keystrokes (auto human-clicks ref to focus if provided). |
+| `press_key` | Press a single key (Enter, Escape, Tab, arrows, Home/End, PageUp/Down, Space, or a character) on the focused element. content or stealth. |
 | `scroll` | Eased, human-stepped scrolling. |
 | `screenshot` | Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate — see the page, then `click`/`move_to` by `x/y` (the vision loop). Also for visual assertions and agent grounding. |
 | `navigate` | Load a URL in the active tab. |

@@ -314,6 +314,9 @@ var ActionService = class {
     });
     return { matched, point };
   }
+  async pressKey(key, stealth) {
+    await this.driver.pressKey(key, mode(stealth));
+  }
   async ensureStart() {
     if (this.lastPos) return this.lastPos;
     this.lastPos = await this.driver.cursorState();
@@ -445,6 +448,9 @@ var ExtensionDriver = class {
   async drag(args) {
     await this.transport.send({ kind: "drag", ...args }, 6e4);
   }
+  async pressKey(key, mode2) {
+    await this.transport.send({ kind: "pressKey", key, mode: mode2 }, 1e4);
+  }
 };
 
 // src/drivers/coord-map.ts
@@ -530,6 +536,9 @@ var OsCursorDriver = class {
     await this.move(args.samples, args.mode);
     await sleep(rand(40, 90));
     await nut.mouse.releaseButton(button);
+  }
+  async pressKey(key, mode2) {
+    await this.transport.send({ kind: "pressKey", key, mode: mode2 });
   }
   async cursorState() {
     const nut = await this.ensureNut();
@@ -777,6 +786,20 @@ function registerTools(server2, action2) {
     async (args) => {
       await action2.type(args);
       return text(`typed ${args.text.length} chars`);
+    }
+  );
+  server2.registerTool(
+    "press_key",
+    {
+      description: "Press a single key on the focused element: Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space, or a single character. Use to submit (Enter), dismiss dialogs (Escape), or tab between fields. stealth:true delivers a trusted key event via the debugger driver.",
+      inputSchema: {
+        key: z.string(),
+        stealth: z.boolean().optional()
+      }
+    },
+    async ({ key, stealth }) => {
+      await action2.pressKey(key, stealth);
+      return text(`pressed ${key}`);
     }
   );
   server2.registerTool(

@@ -68,6 +68,9 @@ async function handle(cmd: Command): Promise<unknown> {
     case "showCursorPath":
       await showCursorPath(cmd.samples);
       return null;
+    case "pressKey":
+      pressKey(cmd.key);
+      return null;
     default:
       throw new Error(`content script cannot handle '${cmd.kind}'`);
   }
@@ -480,6 +483,44 @@ function dispatchKey(el: Element | null, type: "keydown" | "keyup", key: string)
   target?.dispatchEvent(
     new KeyboardEvent(type, { key, bubbles: true, cancelable: true, composed: true }),
   );
+}
+
+const KEY_CODES: Record<string, { code: string; keyCode: number }> = {
+  Enter: { code: "Enter", keyCode: 13 },
+  Escape: { code: "Escape", keyCode: 27 },
+  Tab: { code: "Tab", keyCode: 9 },
+  Backspace: { code: "Backspace", keyCode: 8 },
+  Delete: { code: "Delete", keyCode: 46 },
+  ArrowUp: { code: "ArrowUp", keyCode: 38 },
+  ArrowDown: { code: "ArrowDown", keyCode: 40 },
+  ArrowLeft: { code: "ArrowLeft", keyCode: 37 },
+  ArrowRight: { code: "ArrowRight", keyCode: 39 },
+  Home: { code: "Home", keyCode: 36 },
+  End: { code: "End", keyCode: 35 },
+  PageUp: { code: "PageUp", keyCode: 33 },
+  PageDown: { code: "PageDown", keyCode: 34 },
+  " ": { code: "Space", keyCode: 32 },
+};
+
+function pressKey(key: string): void {
+  const info = KEY_CODES[key] ?? {
+    code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+    keyCode: 0,
+  };
+  const target = (document.activeElement as HTMLElement | null) ?? document.body;
+  for (const type of ["keydown", "keyup"] as const) {
+    target.dispatchEvent(
+      new KeyboardEvent(type, {
+        key,
+        code: info.code,
+        keyCode: info.keyCode,
+        which: info.keyCode,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }),
+    );
+  }
 }
 
 function buttonIndex(button: MouseButton): number {

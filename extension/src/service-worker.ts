@@ -118,7 +118,8 @@ function isDrive(cmd: Command): cmd is DriveCommand {
     cmd.kind === "replayClick" ||
     cmd.kind === "type" ||
     cmd.kind === "scroll" ||
-    cmd.kind === "drag"
+    cmd.kind === "drag" ||
+    cmd.kind === "pressKey"
   );
 }
 

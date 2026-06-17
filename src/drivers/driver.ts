@@ -58,4 +58,5 @@ export interface BrowserDriver {
   hover(opts: { ref?: string; x?: number; y?: number; stealth?: boolean }): Promise<void>;
   ensureVisible(ref?: string, point?: Point): Promise<Rect | null>;
   drag(args: { samples: CursorSample[]; target: Point; button: MouseButton; mode: DeliveryMode }): Promise<void>;
+  pressKey(key: string, mode: DeliveryMode): Promise<void>;
 }

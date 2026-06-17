@@ -119,7 +119,9 @@ async function main() {
   const found = await client.callTool({ name: "find", arguments: { text: "Sign in" } });
   console.log(`find "Sign in" → ${text(found).trim()}`);
   const clickedText = await client.callTool({ name: "click_text", arguments: { text: "Sign in" } });
-  console.log(`click_text "Sign in" → ${text(clickedText)}\n`);
+  console.log(`click_text "Sign in" → ${text(clickedText)}`);
+  const pressed = await client.callTool({ name: "press_key", arguments: { key: "Escape" } });
+  console.log(`press_key Escape → ${text(pressed)}\n`);
 
   console.log(`commands the browser received: ${captured.commands.join(", ")}`);
 
@@ -133,6 +135,7 @@ async function main() {
     "server version matches package.json": serverInfo?.version === PKG_VERSION,
     "find locates element by text": text(found).includes("e2"),
     "click_text finds + clicks the match": text(clickedText).includes("e2"),
+    "press_key dispatched": captured.commands.includes("pressKey"),
   };
 
   await client.close();

@@ -120,6 +120,22 @@ export function registerTools(server: McpServer, action: ActionService): void {
   );
 
   server.registerTool(
+    "press_key",
+    {
+      description:
+        "Press a single key on the focused element: Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space, or a single character. Use to submit (Enter), dismiss dialogs (Escape), or tab between fields. stealth:true delivers a trusted key event via the debugger driver.",
+      inputSchema: {
+        key: z.string(),
+        stealth: z.boolean().optional(),
+      },
+    },
+    async ({ key, stealth }) => {
+      await action.pressKey(key, stealth);
+      return text(`pressed ${key}`);
+    },
+  );
+
+  server.registerTool(
     "scroll",
     {
       description: "Scroll the page by dy (and optional dx) pixels in eased human steps.",

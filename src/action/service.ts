@@ -188,6 +188,10 @@ export class ActionService {
     return { matched, point };
   }
 
+  async pressKey(key: string, stealth?: boolean): Promise<void> {
+    await this.driver.pressKey(key, mode(stealth));
+  }
+
   private async ensureStart(): Promise<Point> {
     if (this.lastPos) return this.lastPos;
     this.lastPos = await this.driver.cursorState();

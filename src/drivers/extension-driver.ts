@@ -95,4 +95,8 @@ export class ExtensionDriver implements BrowserDriver {
   async drag(args: { samples: CursorSample[]; target: Point; button: MouseButton; mode: DeliveryMode }): Promise<void> {
     await this.transport.send({ kind: "drag", ...args }, 60_000);
   }
+
+  async pressKey(key: string, mode: DeliveryMode): Promise<void> {
+    await this.transport.send({ kind: "pressKey", key, mode }, 10_000);
+  }
 }
