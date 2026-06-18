@@ -74,9 +74,23 @@ async function onCommand(raw: string): Promise<void> {
 }
 
 async function activeTabId(): Promise<number> {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab?.id) throw new Error("No active tab found");
-  return tab.id;
+  // Don't require Chrome to be the OS-focused window — agents drive it from a
+  // terminal, so it's usually backgrounded and lastFocusedWindow returns nothing.
+  const isHttp = (t: chrome.tabs.Tab) => /^https?:/.test(t.url ?? "");
+  const queries: chrome.tabs.QueryInfo[] = [
+    { active: true, lastFocusedWindow: true },
+    { active: true },
+  ];
+  for (const q of queries) {
+    const tabs = await chrome.tabs.query(q);
+    const tab = tabs.find((t) => t.id != null && isHttp(t)) ?? tabs.find((t) => t.id != null);
+    if (tab?.id != null) return tab.id;
+  }
+  const http = (await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] })).find(
+    (t) => t.id != null,
+  );
+  if (http?.id != null) return http.id;
+  throw new Error("No active tab found. Open a normal http(s) tab in Chrome.");
 }
 
 async function route(cmd: Command): Promise<unknown> {

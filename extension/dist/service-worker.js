@@ -234,9 +234,21 @@ async function onCommand(raw) {
   }
 }
 async function activeTabId() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab?.id) throw new Error("No active tab found");
-  return tab.id;
+  const isHttp = (t) => /^https?:/.test(t.url ?? "");
+  const queries = [
+    { active: true, lastFocusedWindow: true },
+    { active: true }
+  ];
+  for (const q of queries) {
+    const tabs = await chrome.tabs.query(q);
+    const tab = tabs.find((t) => t.id != null && isHttp(t)) ?? tabs.find((t) => t.id != null);
+    if (tab?.id != null) return tab.id;
+  }
+  const http = (await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] })).find(
+    (t) => t.id != null
+  );
+  if (http?.id != null) return http.id;
+  throw new Error("No active tab found. Open a normal http(s) tab in Chrome.");
 }
 async function route(cmd) {
   const tabId = await activeTabId();

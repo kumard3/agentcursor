@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.2.9**: Active-tab resolution no longer requires Chrome to be the OS-focused window — it falls back to the active tab in any window, then any open http(s) tab. Fixes `No active tab found` when an agent drives the browser while you're in your editor/terminal (the normal case).
 - **0.2.8**: Interaction: `press_key` — press Enter / Escape / Tab / arrows / Home / End / etc. on the focused element, content or stealth (trusted CDP key event). Rounds out the Comet-style action set: Navigation, Identification, Interaction.
 - **0.2.7**: Identification tools — `find` (locate elements by visible text / accessible name, shadow-DOM aware) and `click_text` (find the best text match, then human-move + click, content or stealth, with a re-read retry). Target by what the element *says*, not by ref or pixel coords.
 - **0.2.6**: Stealth typing inserts the whole string in one `Input.insertText` call. Per-character insertion landed at a reset caret on controlled editors (X's Draft.js) and typed text backward.
