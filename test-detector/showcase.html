@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentCursor — live demo</title>
+    <style>
+      :root {
+        --bg: #0b0f1a; --panel: #131a2a; --line: #243049; --text: #e6edf6;
+        --muted: #8aa0bd; --accent: #4f8cff; --green: #34d399; --amber: #fbbf24;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+        padding: 24px 380px 60px 28px;
+      }
+      h1 { font-size: 24px; margin: 0; letter-spacing: -0.02em; }
+      .sub { margin: 4px 0 8px; color: var(--muted); }
+      #banner {
+        display: inline-block; margin: 8px 0 22px; padding: 8px 14px; border-radius: 999px;
+        background: #182236; border: 1px solid var(--line); color: var(--muted);
+        font-size: 13px; transition: all .15s;
+      }
+      #banner.hit { background: #14321f; border-color: #1f6b40; color: var(--green); }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 860px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+      .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 14px; }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      button.act {
+        padding: 9px 16px; font-size: 14px; font-weight: 600; border-radius: 9px;
+        border: 1px solid var(--line); background: #1b2740; color: var(--text); cursor: pointer;
+      }
+      button.act:hover { border-color: var(--accent); }
+      button.buy { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .pill { margin-left: 4px; color: var(--muted); font-size: 13px; }
+      label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+      input, textarea {
+        width: 100%; padding: 10px 12px; font-size: 14px; border-radius: 9px;
+        border: 1px solid var(--line); background: #0f1626; color: var(--text);
+      }
+      input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+      textarea { min-height: 54px; resize: vertical; }
+      .menu { position: relative; display: inline-block; }
+      .menu-trigger { padding: 9px 16px; border: 1px solid var(--line); border-radius: 9px; background: #1b2740; cursor: default; }
+      .submenu {
+        display: none; position: absolute; top: calc(100% + 6px); left: 0; min-width: 180px;
+        background: #1b2740; border: 1px solid var(--accent); border-radius: 10px; padding: 6px; z-index: 5;
+      }
+      .submenu.show { display: block; }
+      .submenu div { padding: 8px 12px; border-radius: 7px; }
+      .submenu div:hover { background: #24345a; }
+      input[type="range"] { width: 100%; accent-color: var(--accent); }
+      #dropzone { height: 110px; border: 1px dashed var(--line); border-radius: 10px; position: relative; margin-top: 6px; }
+      #box {
+        position: absolute; left: 8px; top: 8px; width: 92px; height: 56px; border-radius: 10px;
+        background: var(--green); color: #04231a; font-weight: 700; display: flex;
+        align-items: center; justify-content: center; cursor: grab; user-select: none;
+      }
+      .tall { margin-top: 16px; max-width: 860px; padding: 16px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); }
+      #bottom { color: var(--green); font-weight: 700; }
+      aside.log {
+        position: fixed; top: 0; right: 0; width: 360px; height: 100vh; overflow: auto;
+        background: #070a12; border-left: 1px solid var(--line); padding: 14px;
+      }
+      aside.log h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+      .ev { font: 12px/1.45 ui-monospace, monospace; padding: 4px 6px; border-radius: 6px; margin-bottom: 3px; color: #9fb3d1; }
+      .ev.hi { background: #11203a; color: var(--text); }
+      .ev .t { color: var(--amber); }
+      .ev .badge { float: right; font-size: 10px; padding: 0 6px; border-radius: 999px; }
+      .ev .trusted { background: #14321f; color: var(--green); }
+      .ev .untrusted { background: #2a1d12; color: var(--amber); }
+      code { background: #1b2740; padding: 1px 6px; border-radius: 5px; }
+    </style>
+  </head>
+  <body>
+    <h1>AgentCursor — live demo</h1>
+    <p class="sub">Drive every tool against this page. Each synthetic event is logged on the right with its <code>isTrusted</code> flag (content = false, stealth/OS = true).</p>
+    <div id="banner">waiting for the first action…</div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>identify &amp; click by text</h2>
+        <div class="row">
+          <button class="act" data-act="Like">Like</button>
+          <button class="act" data-act="Reply">Reply</button>
+          <button class="act" data-act="Share">Share</button>
+          <button class="act buy" data-act="Buy now">Buy now</button>
+        </div>
+        <div class="pill" id="clicklog">no clicks yet</div>
+        <div class="menu" style="margin-top:16px">
+          <div class="menu-trigger" id="menu" role="button" tabindex="0" aria-label="Menu">Menu ▾</div>
+          <div class="submenu" id="submenu"><div>Profile</div><div>Settings</div><div>Sign out</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>type &amp; keys</h2>
+        <label for="email">Email</label>
+        <input id="email" aria-label="Email" placeholder="you@example.com" />
+        <label for="name">Name</label>
+        <input id="name" aria-label="Name" placeholder="full name" />
+        <label for="message">Message</label>
+        <textarea id="message" aria-label="Message" placeholder="say something…"></textarea>
+        <div class="row" style="margin-top:12px">
+          <button class="act buy" id="submit" data-act="Submit">Submit</button>
+          <span class="pill" id="formlog">Tab between fields, Enter to submit</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>drag — slider</h2>
+        <input id="range" type="range" min="0" max="100" value="0" aria-label="Volume" />
+        <div class="pill">value: <b id="rangeval">0</b></div>
+      </div>
+
+      <div class="card">
+        <h2>drag — box</h2>
+        <div id="dropzone"><div id="box" role="button" tabindex="0" aria-label="drag handle">drag me</div></div>
+        <div class="pill" id="boxpos">(8, 8)</div>
+      </div>
+    </div>
+
+    <div class="tall">scroll target — keep going…<br /><br /><br /><span id="bottom">bottom reached ✓</span></div>
+
+    <aside class="log"><h3>event log</h3><div id="log"></div></aside>
+
+    <script>
+      const logEl = document.getElementById("log");
+      const banner = document.getElementById("banner");
+      const lines = [];
+      function badge(t) { return t ? '<span class="badge trusted">trusted</span>' : '<span class="badge untrusted">isTrusted=false</span>'; }
+      function log(label, detail, trusted, big) {
+        lines.unshift(`<div class="ev ${big ? "hi" : ""}">${badge(trusted)}<span class="t">${label}</span> ${detail || ""}</div>`);
+        if (lines.length > 60) lines.pop();
+        logEl.innerHTML = lines.join("");
+        if (big) { banner.textContent = `${label} ${detail || ""}`.trim(); banner.classList.add("hit"); }
+      }
+
+      let lastMove = 0;
+      document.addEventListener("mousemove", (e) => {
+        const now = performance.now();
+        if (now - lastMove > 90) { lastMove = now; log("move", `(${e.clientX | 0},${e.clientY | 0})`, e.isTrusted, false); }
+        if (drag && e.buttons) {
+          const x = e.clientX - drag.dx, y = e.clientY - drag.dy;
+          box.style.left = x + "px"; box.style.top = y + "px";
+          document.getElementById("boxpos").textContent = `(${x | 0}, ${y | 0})`;
+        }
+      });
+
+      let clicks = 0;
+      document.querySelectorAll("button.act").forEach((b) =>
+        b.addEventListener("click", (e) => {
+          if (b.id === "submit") return;
+          clicks++;
+          document.getElementById("clicklog").textContent = `last: "${b.dataset.act}"  ·  ${clicks} clicks`;
+          log("CLICK", `"${b.dataset.act}"`, e.isTrusted, true);
+        }),
+      );
+
+      const submenu = document.getElementById("submenu");
+      document.getElementById("menu").addEventListener("mouseenter", (e) => { submenu.classList.add("show"); log("HOVER", "Menu opened", e.isTrusted, true); });
+      document.getElementById("menu").addEventListener("mouseleave", () => submenu.classList.remove("show"));
+
+      ["email", "name", "message"].forEach((id) =>
+        document.getElementById(id).addEventListener("input", (e) => log("TYPE", `${id} = "${e.target.value}"`, e.isTrusted, true)),
+      );
+
+      ["email", "name", "message"].forEach((id) =>
+        document.getElementById(id).addEventListener("keydown", (e) => {
+          if (e.key === "Tab" || e.key === "Enter" || e.key === "Escape")
+            log("KEY", `${e.key} in ${id}`, e.isTrusted, true);
+        }),
+      );
+
+      function submit(e, src) {
+        e && e.preventDefault();
+        const email = document.getElementById("email").value;
+        document.getElementById("formlog").textContent = email ? `submitted as ${email} (${src})` : `submitted (empty) (${src})`;
+        log("SUBMIT", email ? `form → ${email}` : "form (empty)", true, true);
+      }
+      document.getElementById("submit").addEventListener("click", (e) => submit(e, "click"));
+      document.getElementById("message").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) submit(e, "Enter"); });
+
+      const range = document.getElementById("range");
+      range.addEventListener("input", (e) => { document.getElementById("rangeval").textContent = e.target.value; log("DRAG", `slider = ${e.target.value}`, e.isTrusted, true); });
+
+      const box = document.getElementById("box");
+      let drag = null;
+      box.addEventListener("mousedown", (e) => { const r = box.getBoundingClientRect(); box.style.position = "fixed"; drag = { dx: e.clientX - r.left, dy: e.clientY - r.top }; log("DOWN", "grab box", e.isTrusted, true); });
+      document.addEventListener("mouseup", (e) => { if (drag) { log("DROP", `box at (${e.clientX | 0},${e.clientY | 0})`, e.isTrusted, true); drag = null; } });
+
+      let lastWheel = 0;
+      document.addEventListener("wheel", (e) => { const now = performance.now(); if (now - lastWheel > 120) { lastWheel = now; log("SCROLL", `Δy ${e.deltaY | 0}`, e.isTrusted, false); } }, { passive: true });
+
+      log("ready", "drive me with agentcursor", true, false);
+    </script>
+  </body>
+</html>
