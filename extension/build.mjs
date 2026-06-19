@@ -37,6 +37,9 @@ await build({
   bundle: true,
   format: "iife",
   target: "chrome116",
+  platform: "browser",
+  minify: true,
+  define: { "process.env.NODE_ENV": '"production"' },
 });
 
 console.log("built extension/dist/{service-worker,content}.js");
