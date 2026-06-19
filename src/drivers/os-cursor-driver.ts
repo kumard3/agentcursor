@@ -1,6 +1,8 @@
 import type {
   CursorSample,
   DeliveryMode,
+  LocatorMatch,
+  LocatorSpec,
   MouseButton,
   PageSnapshot,
   Point,
@@ -124,6 +126,18 @@ export class OsCursorDriver implements BrowserDriver {
   async pressKey(key: string, mode: DeliveryMode): Promise<void> {
     // Keys go through the extension bridge (content or debugger), same as hover.
     await this.transport.send({ kind: "pressKey", key, mode });
+  }
+
+  // Locator resolution is DOM-side, so it goes through the extension bridge even
+  // in OS mode (only the cursor itself is driven by nut-js).
+  async resolveLocator(
+    spec: LocatorSpec,
+    opts: { timeoutMs: number; scrollIntoView?: boolean },
+  ): Promise<LocatorMatch> {
+    return (await this.transport.send(
+      { kind: "resolveLocator", spec, timeoutMs: opts.timeoutMs, scrollIntoView: opts.scrollIntoView },
+      opts.timeoutMs + 5_000,
+    )) as LocatorMatch;
   }
 
   async cursorState(): Promise<Point> {

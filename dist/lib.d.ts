@@ -40,6 +40,45 @@ interface PageSnapshot {
 }
 type DeliveryMode = "content" | "debugger";
 type MouseButton = "left" | "right" | "middle";
+/** A serializable, Playwright-style locator query. Resolved in the content script. */
+type LocatorStep = {
+    kind: "css";
+    value: string;
+} | {
+    kind: "role";
+    value: string;
+    name?: string;
+    exact?: boolean;
+} | {
+    kind: "text";
+    value: string;
+    exact?: boolean;
+} | {
+    kind: "label";
+    value: string;
+    exact?: boolean;
+} | {
+    kind: "placeholder";
+    value: string;
+    exact?: boolean;
+} | {
+    kind: "testid";
+    value: string;
+} | {
+    kind: "filter";
+    hasText: string;
+} | {
+    kind: "nth";
+    index: number;
+};
+type LocatorSpec = LocatorStep[];
+interface LocatorMatch {
+    handle: string;
+    rect: Rect;
+    count: number;
+    visible: boolean;
+    text: string;
+}
 type Command = {
     kind: "snapshot";
     maxElements: number;
@@ -68,6 +107,7 @@ type Command = {
     perKeyMinMs: number;
     perKeyMaxMs: number;
     mode: DeliveryMode;
+    replace?: boolean;
 } | {
     kind: "scroll";
     dx: number;
@@ -111,6 +151,11 @@ type Command = {
     kind: "pressKey";
     key: string;
     mode: DeliveryMode;
+} | {
+    kind: "resolveLocator";
+    spec: LocatorSpec;
+    timeoutMs: number;
+    scrollIntoView?: boolean;
 };
 
 interface ClickArgs {
@@ -128,6 +173,7 @@ interface TypeArgs {
     perKeyMinMs: number;
     perKeyMaxMs: number;
     mode: DeliveryMode;
+    replace?: boolean;
 }
 interface ScrollArgs {
     dx: number;
@@ -171,12 +217,17 @@ interface BrowserDriver {
         mode: DeliveryMode;
     }): Promise<void>;
     pressKey(key: string, mode: DeliveryMode): Promise<void>;
+    resolveLocator(spec: LocatorSpec, opts: {
+        timeoutMs: number;
+        scrollIntoView?: boolean;
+    }): Promise<LocatorMatch>;
 }
 
 interface TargetOpts {
     ref?: string;
     x?: number;
     y?: number;
+    rect?: Rect;
 }
 /**
  * High-level human actions. Owns the cached snapshot + last cursor position,
@@ -200,8 +251,14 @@ declare class ActionService {
     type(opts: {
         text: string;
         ref?: string;
+        rect?: Rect;
+        replace?: boolean;
         stealth?: boolean;
     }): Promise<void>;
+    resolveLocator(spec: LocatorSpec, opts?: {
+        timeoutMs?: number;
+        scrollIntoView?: boolean;
+    }): Promise<LocatorMatch>;
     scroll(opts: {
         dy: number;
         dx?: number;
@@ -318,6 +375,10 @@ declare class ExtensionDriver implements BrowserDriver {
         mode: DeliveryMode;
     }): Promise<void>;
     pressKey(key: string, mode: DeliveryMode): Promise<void>;
+    resolveLocator(spec: LocatorSpec, opts: {
+        timeoutMs: number;
+        scrollIntoView?: boolean;
+    }): Promise<LocatorMatch>;
 }
 
 /**
@@ -349,6 +410,10 @@ declare class OsCursorDriver implements BrowserDriver {
         mode: DeliveryMode;
     }): Promise<void>;
     pressKey(key: string, mode: DeliveryMode): Promise<void>;
+    resolveLocator(spec: LocatorSpec, opts: {
+        timeoutMs: number;
+        scrollIntoView?: boolean;
+    }): Promise<LocatorMatch>;
     cursorState(): Promise<Point>;
     move(samples: CursorSample[], _mode: DeliveryMode): Promise<void>;
     click(args: ClickArgs): Promise<void>;

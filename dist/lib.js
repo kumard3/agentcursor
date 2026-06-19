@@ -221,13 +221,21 @@ var ActionService = class {
   }
   async type(opts) {
     if (opts.ref) await this.click({ ref: opts.ref, stealth: opts.stealth });
+    else if (opts.rect) await this.click({ rect: opts.rect, stealth: opts.stealth });
     const delay = sampleKeyDelayMs(createRng());
     await this.driver.type({
       text: opts.text,
       ref: opts.ref,
       perKeyMinMs: delay.min,
       perKeyMaxMs: delay.max,
-      mode: mode(opts.stealth)
+      mode: mode(opts.stealth),
+      replace: opts.replace
+    });
+  }
+  resolveLocator(spec, opts = {}) {
+    return this.driver.resolveLocator(spec, {
+      timeoutMs: opts.timeoutMs ?? 5e3,
+      scrollIntoView: opts.scrollIntoView
     });
   }
   async scroll(opts) {
@@ -322,6 +330,10 @@ var ActionService = class {
     }
   }
   async resolveTarget(opts) {
+    if (opts.rect) {
+      const width2 = Math.max(Math.min(opts.rect.width, opts.rect.height), 8);
+      return { point: offCenterPoint(opts.rect, createRng()), width: width2 };
+    }
     if (typeof opts.x === "number" && typeof opts.y === "number") {
       return { point: { x: opts.x, y: opts.y }, width: 24 };
     }
@@ -520,6 +532,12 @@ var ExtensionDriver = class {
   async pressKey(key, mode2) {
     await this.transport.send({ kind: "pressKey", key, mode: mode2 }, 1e4);
   }
+  async resolveLocator(spec, opts) {
+    return await this.transport.send(
+      { kind: "resolveLocator", spec, timeoutMs: opts.timeoutMs, scrollIntoView: opts.scrollIntoView },
+      opts.timeoutMs + 5e3
+    );
+  }
 };
 
 // src/drivers/coord-map.ts
@@ -608,6 +626,14 @@ var OsCursorDriver = class {
   }
   async pressKey(key, mode2) {
     await this.transport.send({ kind: "pressKey", key, mode: mode2 });
+  }
+  // Locator resolution is DOM-side, so it goes through the extension bridge even
+  // in OS mode (only the cursor itself is driven by nut-js).
+  async resolveLocator(spec, opts) {
+    return await this.transport.send(
+      { kind: "resolveLocator", spec, timeoutMs: opts.timeoutMs, scrollIntoView: opts.scrollIntoView },
+      opts.timeoutMs + 5e3
+    );
   }
   async cursorState() {
     const nut = await this.ensureNut();

@@ -1,6 +1,8 @@
 import type {
   CursorSample,
   DeliveryMode,
+  LocatorMatch,
+  LocatorSpec,
   MouseButton,
   PageSnapshot,
   Point,
@@ -98,5 +100,15 @@ export class ExtensionDriver implements BrowserDriver {
 
   async pressKey(key: string, mode: DeliveryMode): Promise<void> {
     await this.transport.send({ kind: "pressKey", key, mode }, 10_000);
+  }
+
+  async resolveLocator(
+    spec: LocatorSpec,
+    opts: { timeoutMs: number; scrollIntoView?: boolean },
+  ): Promise<LocatorMatch> {
+    return (await this.transport.send(
+      { kind: "resolveLocator", spec, timeoutMs: opts.timeoutMs, scrollIntoView: opts.scrollIntoView },
+      opts.timeoutMs + 5_000,
+    )) as LocatorMatch;
   }
 }

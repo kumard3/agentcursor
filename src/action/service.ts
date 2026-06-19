@@ -1,4 +1,12 @@
-import type { MouseButton, PageElement, PageSnapshot, Point } from "../protocol";
+import type {
+  LocatorMatch,
+  LocatorSpec,
+  MouseButton,
+  PageElement,
+  PageSnapshot,
+  Point,
+  Rect,
+} from "../protocol";
 import type { BrowserDriver } from "../drivers/driver";
 import {
   createRng,
@@ -14,6 +22,7 @@ interface TargetOpts {
   ref?: string;
   x?: number;
   y?: number;
+  rect?: Rect;
 }
 
 interface ResolvedTarget {
@@ -75,9 +84,12 @@ export class ActionService {
   async type(opts: {
     text: string;
     ref?: string;
+    rect?: Rect;
+    replace?: boolean;
     stealth?: boolean;
   }): Promise<void> {
     if (opts.ref) await this.click({ ref: opts.ref, stealth: opts.stealth });
+    else if (opts.rect) await this.click({ rect: opts.rect, stealth: opts.stealth });
     const delay = sampleKeyDelayMs(createRng());
     await this.driver.type({
       text: opts.text,
@@ -85,6 +97,17 @@ export class ActionService {
       perKeyMinMs: delay.min,
       perKeyMaxMs: delay.max,
       mode: mode(opts.stealth),
+      replace: opts.replace,
+    });
+  }
+
+  resolveLocator(
+    spec: LocatorSpec,
+    opts: { timeoutMs?: number; scrollIntoView?: boolean } = {},
+  ): Promise<LocatorMatch> {
+    return this.driver.resolveLocator(spec, {
+      timeoutMs: opts.timeoutMs ?? 5_000,
+      scrollIntoView: opts.scrollIntoView,
     });
   }
 
@@ -206,6 +229,10 @@ export class ActionService {
   }
 
   private async resolveTarget(opts: TargetOpts): Promise<ResolvedTarget> {
+    if (opts.rect) {
+      const width = Math.max(Math.min(opts.rect.width, opts.rect.height), 8);
+      return { point: offCenterPoint(opts.rect, createRng()), width };
+    }
     if (typeof opts.x === "number" && typeof opts.y === "number") {
       return { point: { x: opts.x, y: opts.y }, width: 24 };
     }
