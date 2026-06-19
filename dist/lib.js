@@ -1,10 +1,3 @@
-#!/usr/bin/env node
-
-// src/index.ts
-import { readFileSync } from "fs";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-
 // src/path-engine/geometry.ts
 function distance(a, b) {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -46,10 +39,10 @@ function createRng(seed) {
   let state = (seed ?? Math.floor(Math.random() * 4294967295)) >>> 0;
   const next = () => {
     state = state + 1831565813 >>> 0;
-    let z2 = state;
-    z2 = Math.imul(z2 ^ z2 >>> 15, z2 | 1);
-    z2 ^= z2 + Math.imul(z2 ^ z2 >>> 7, z2 | 61);
-    return ((z2 ^ z2 >>> 14) >>> 0) / 4294967296;
+    let z = state;
+    z = Math.imul(z ^ z >>> 15, z | 1);
+    z ^= z + Math.imul(z ^ z >>> 7, z | 61);
+    return ((z ^ z >>> 14) >>> 0) / 4294967296;
   };
   const range = (min, max) => min + (max - min) * next();
   const int = (min, max) => Math.floor(range(min, max + 1));
@@ -189,8 +182,8 @@ var rand = (min, max) => min + Math.random() * (max - min);
 
 // src/action/service.ts
 var ActionService = class {
-  constructor(driver2) {
-    this.driver = driver2;
+  constructor(driver) {
+    this.driver = driver;
   }
   driver;
   snapshot = null;
@@ -289,20 +282,20 @@ var ActionService = class {
     });
   }
   /** Identification: rank on-screen elements by how well their text/name matches a query. */
-  async find(text2, opts = {}) {
+  async find(text, opts = {}) {
     const snap = await this.readPage(200, true);
-    return rankByText(snap.elements, text2).slice(0, opts.maxResults ?? 8);
+    return rankByText(snap.elements, text).slice(0, opts.maxResults ?? 8);
   }
   /** Identification + interaction: find the best text match, then human-click it (re-reading if needed). */
-  async clickText(text2, opts = {}) {
-    let matches = rankByText((await this.readPage(200, true)).elements, text2);
+  async clickText(text, opts = {}) {
+    let matches = rankByText((await this.readPage(200, true)).elements, text);
     for (let attempt = 0; attempt < 2 && matches.length === 0; attempt++) {
       await sleep(400);
-      matches = rankByText((await this.readPage(200, true)).elements, text2);
+      matches = rankByText((await this.readPage(200, true)).elements, text);
     }
     if (matches.length === 0) {
       throw new Error(
-        `No element matching text "${text2}". Call read_page or screenshot to see what's on the page.`
+        `No element matching text "${text}". Call read_page or screenshot to see what's on the page.`
       );
     }
     const matched = matches[Math.min(opts.nth ?? 0, matches.length - 1)];
@@ -380,6 +373,82 @@ function rankByText(elements, query) {
   scored.sort((a, b) => b.score - a.score);
   return scored.map((s) => s.el);
 }
+
+// src/server/transport.ts
+import { randomUUID } from "crypto";
+import { WebSocket, WebSocketServer } from "ws";
+
+// src/protocol/index.ts
+var DEFAULT_WS_PORT = 8930;
+var PROTOCOL_VERSION = 1;
+
+// src/server/transport.ts
+var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
+var ExtensionTransport = class {
+  wss;
+  socket = null;
+  pending = /* @__PURE__ */ new Map();
+  constructor(port = DEFAULT_WS_PORT) {
+    this.wss = new WebSocketServer({ host: "127.0.0.1", port });
+    this.wss.on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        process.stderr.write(
+          `agentcursor: port ${port} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
+`
+        );
+        process.exit(1);
+      }
+      process.stderr.write(`agentcursor: WebSocket server error: ${err.message}
+`);
+    });
+    this.wss.on("connection", (ws) => {
+      this.socket = ws;
+      ws.on("message", (data) => this.onMessage(data.toString()));
+      ws.on("close", () => {
+        if (this.socket === ws) this.socket = null;
+      });
+      ws.on("error", () => void 0);
+    });
+  }
+  get connected() {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+  send(command, timeoutMs = 3e4) {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(NOT_CONNECTED));
+    }
+    const id = randomUUID();
+    const envelope = { v: PROTOCOL_VERSION, id, command };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Command '${command.kind}' timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      socket.send(JSON.stringify(envelope));
+    });
+  }
+  onMessage(raw) {
+    let result;
+    try {
+      result = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const entry = this.pending.get(result.id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.pending.delete(result.id);
+    if (result.ok) entry.resolve(result.data);
+    else entry.reject(new Error(result.error));
+  }
+  close() {
+    for (const entry of this.pending.values()) clearTimeout(entry.timer);
+    this.pending.clear();
+    this.wss.close();
+  }
+};
 
 // src/drivers/extension-driver.ts
 var ACTION_TIMEOUT_MS = 6e4;
@@ -610,398 +679,15 @@ function nutButton(nut, button) {
   if (button === "middle") return nut.Button.MIDDLE;
   return nut.Button.LEFT;
 }
-
-// src/protocol/index.ts
-var DEFAULT_WS_PORT = 8930;
-var PROTOCOL_VERSION = 1;
-
-// src/server/transport.ts
-import { randomUUID } from "crypto";
-import { WebSocket, WebSocketServer } from "ws";
-var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
-var ExtensionTransport = class {
-  wss;
-  socket = null;
-  pending = /* @__PURE__ */ new Map();
-  constructor(port2 = DEFAULT_WS_PORT) {
-    this.wss = new WebSocketServer({ host: "127.0.0.1", port: port2 });
-    this.wss.on("error", (err) => {
-      if (err.code === "EADDRINUSE") {
-        process.stderr.write(
-          `agentcursor: port ${port2} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
-`
-        );
-        process.exit(1);
-      }
-      process.stderr.write(`agentcursor: WebSocket server error: ${err.message}
-`);
-    });
-    this.wss.on("connection", (ws) => {
-      this.socket = ws;
-      ws.on("message", (data) => this.onMessage(data.toString()));
-      ws.on("close", () => {
-        if (this.socket === ws) this.socket = null;
-      });
-      ws.on("error", () => void 0);
-    });
-  }
-  get connected() {
-    return this.socket?.readyState === WebSocket.OPEN;
-  }
-  send(command, timeoutMs = 3e4) {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error(NOT_CONNECTED));
-    }
-    const id = randomUUID();
-    const envelope = { v: PROTOCOL_VERSION, id, command };
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Command '${command.kind}' timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      socket.send(JSON.stringify(envelope));
-    });
-  }
-  onMessage(raw) {
-    let result;
-    try {
-      result = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    const entry = this.pending.get(result.id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    this.pending.delete(result.id);
-    if (result.ok) entry.resolve(result.data);
-    else entry.reject(new Error(result.error));
-  }
-  close() {
-    for (const entry of this.pending.values()) clearTimeout(entry.timer);
-    this.pending.clear();
-    this.wss.close();
-  }
+export {
+  ActionService,
+  ExtensionDriver,
+  ExtensionTransport,
+  OsCursorDriver,
+  createRng,
+  generateMove,
+  offCenterPoint,
+  sampleDwellMs,
+  sampleKeyDelayMs,
+  samplePressMs
 };
-
-// src/server/tools.ts
-import { z } from "zod";
-function text(body) {
-  return { content: [{ type: "text", text: body }] };
-}
-function registerTools(server2, action2) {
-  server2.registerTool(
-    "read_page",
-    {
-      description: "Read the current page: interactive elements with stable [ref] handles, their roles/names and on-screen rectangles, plus visible text. Call before clicking or typing by ref.",
-      inputSchema: {
-        maxElements: z.number().int().min(1).max(200).optional(),
-        includeText: z.boolean().optional()
-      }
-    },
-    async ({ maxElements, includeText }) => {
-      const snap = await action2.readPage(maxElements ?? 60, includeText ?? true);
-      return text(formatSnapshot(snap));
-    }
-  );
-  server2.registerTool(
-    "find",
-    {
-      description: "Identification: locate on-screen elements by their visible text or accessible name (shadow-DOM aware), the way a human scans a page. Returns ranked matches with [ref], role, and on-screen rect. Use when you don't already have a ref, then click/move_to/hover by [ref] \u2014 or use click_text to do it in one step.",
-      inputSchema: {
-        text: z.string(),
-        maxResults: z.number().int().min(1).max(20).optional()
-      }
-    },
-    async ({ text: query, maxResults }) => {
-      const matches = await action2.find(query, { maxResults });
-      if (!matches.length) return text(`No elements matching "${query}".`);
-      return text(matches.map(formatElement).join("\n"));
-    }
-  );
-  server2.registerTool(
-    "click_text",
-    {
-      description: "Identification + interaction in one step: find the element that best matches the given text/label, then human-move the cursor to it and click. Re-reads the page if the element isn't there yet. `nth` picks a later match, `stealth:true` delivers trusted events, `double` double-clicks.",
-      inputSchema: {
-        text: z.string(),
-        nth: z.number().int().min(0).optional(),
-        double: z.boolean().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async ({ text: query, nth, double, stealth }) => {
-      const { matched, point } = await action2.clickText(query, { nth, double, stealth });
-      return text(
-        `clicked "${matched.name || matched.ref}" [${matched.ref}] at (${point.x.toFixed(0)}, ${point.y.toFixed(0)})`
-      );
-    }
-  );
-  server2.registerTool(
-    "move_to",
-    {
-      description: "Move the cursor to an element ([ref] from read_page) or to absolute viewport x/y along a human-like path. Does not click. stealth:true delivers trusted events via the debugger driver.",
-      inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      const p = await action2.moveTo(args);
-      return text(`moved to (${p.x.toFixed(0)}, ${p.y.toFixed(0)})`);
-    }
-  );
-  server2.registerTool(
-    "click",
-    {
-      description: "Human-like move + click on an element ([ref]) or x/y. Supports button, double-click, and stealth (trusted-event) mode.",
-      inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        button: z.enum(["left", "right", "middle"]).optional(),
-        double: z.boolean().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      const p = await action2.click(args);
-      const where = args.ref ? `'${args.ref}'` : `(${p.x.toFixed(0)}, ${p.y.toFixed(0)})`;
-      return text(`clicked ${where}`);
-    }
-  );
-  server2.registerTool(
-    "type",
-    {
-      description: "Type text with human key timing. If a ref is given, the input is human-clicked to focus first. stealth:true uses the debugger driver.",
-      inputSchema: {
-        text: z.string(),
-        ref: z.string().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.type(args);
-      return text(`typed ${args.text.length} chars`);
-    }
-  );
-  server2.registerTool(
-    "press_key",
-    {
-      description: "Press a single key on the focused element: Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space, or a single character. Use to submit (Enter), dismiss dialogs (Escape), or tab between fields. stealth:true delivers a trusted key event via the debugger driver.",
-      inputSchema: {
-        key: z.string(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async ({ key, stealth }) => {
-      await action2.pressKey(key, stealth);
-      return text(`pressed ${key}`);
-    }
-  );
-  server2.registerTool(
-    "scroll",
-    {
-      description: "Scroll the page by dy (and optional dx) pixels in eased human steps.",
-      inputSchema: {
-        dy: z.number(),
-        dx: z.number().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.scroll(args);
-      return text(`scrolled dy=${args.dy}`);
-    }
-  );
-  server2.registerTool(
-    "navigate",
-    {
-      description: "Navigate the active tab to a URL.",
-      inputSchema: { url: z.string() }
-    },
-    async ({ url }) => {
-      await action2.navigate(url);
-      return text(`navigating to ${url}`);
-    }
-  );
-  server2.registerTool(
-    "get_url",
-    { description: "Return the active tab's current URL.", inputSchema: {} },
-    async () => text(await action2.getUrl())
-  );
-  server2.registerTool(
-    "wait_for",
-    {
-      description: "Wait until an element [ref] appears or some visible text is present (or specific condition), up to timeoutMs (default 10000). Supports condition: 'exists' | 'visible' | 'text'. Use in testing and automation flows for resilience on dynamic sites.",
-      inputSchema: {
-        ref: z.string().optional(),
-        text: z.string().optional(),
-        timeoutMs: z.number().int().optional(),
-        condition: z.enum(["exists", "visible", "text"]).optional()
-      }
-    },
-    async (args) => {
-      const ok = await action2.waitFor(args);
-      return text(ok ? "found" : "timed out");
-    }
-  );
-  server2.registerTool(
-    "screenshot",
-    {
-      description: "Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate. SEE the page, then click(x,y)/move_to(x,y) at coordinates read off the image. This is the vision loop (screenshot -> decide coords -> click -> screenshot) and needs no DOM refs.",
-      inputSchema: {
-        format: z.enum(["png", "jpeg"]).optional()
-      }
-    },
-    async ({ format }) => {
-      const dataUrl = await action2.screenshot(format ?? "png");
-      const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(dataUrl);
-      if (!m) return text(dataUrl);
-      return { content: [{ type: "image", data: m[2], mimeType: m[1] }] };
-    }
-  );
-  server2.registerTool(
-    "hover",
-    {
-      description: "Human-like move the cursor to an element or coordinates and fire hover events (mouseover, mouseenter). Essential for dropdowns, tooltips, navigation menus, and realistic workflow/testing automation.",
-      inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.hover(args);
-      const where = args.ref ? `'${args.ref}'` : args.x != null ? `(${args.x},${args.y})` : "current position";
-      return text(`hovered ${where}`);
-    }
-  );
-  server2.registerTool(
-    "status",
-    {
-      description: "Return current MCP server status, driver in use (extension or os), whether the browser bridge is connected, and the active tab URL if available. Use for health checks in long-running tests, CI workflows, and agent monitoring.",
-      inputSchema: {}
-    },
-    async () => {
-      const url = await action2.getUrl().catch(() => null);
-      const connected = url !== null;
-      return text(
-        [
-          `driver: ${process.env.AGENTCURSOR_DRIVER ?? "extension"}`,
-          `bridge_connected: ${connected}`,
-          `active_url: ${url ?? "none (extension not connected or no http tab)"}`,
-          `ws_port: ${process.env.AGENTCURSOR_WS_PORT ?? 8930}`,
-          "protocol_version: 1"
-        ].join("\n")
-      );
-    }
-  );
-  server2.registerTool(
-    "drag",
-    {
-      description: "Perform a human-like drag from one element/ref or coords to another (e.g. for sliders, reordering, canvas drawing). Uses the realistic path engine while holding the mouse button.",
-      inputSchema: {
-        fromRef: z.string().optional(),
-        fromX: z.number().optional(),
-        fromY: z.number().optional(),
-        toRef: z.string().optional(),
-        toX: z.number().optional(),
-        toY: z.number().optional(),
-        button: z.enum(["left", "right", "middle"]).optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.drag(
-        { ref: args.fromRef, x: args.fromX, y: args.fromY },
-        { ref: args.toRef, x: args.toX, y: args.toY },
-        args.button ?? "left",
-        args.stealth
-      );
-      return text("dragged");
-    }
-  );
-  server2.registerPrompt(
-    "human-browser-task",
-    {
-      description: "Guide for performing realistic, human-like browser automation tasks using agentcursor tools. Use this for any non-trivial interaction on real websites."
-    },
-    async () => ({
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: `When using agentcursor:
-1. Always call status and read_page first to understand the current page and connection.
-2. Use [ref] from read_page for all clicks, hovers, types.
-3. For complex pages, use screenshot often to ground yourself.
-4. Prefer human-like: move_to or hover before click, use wait_for for dynamic content.
-5. On modern sites (X, Reddit etc), the snapshot now handles shadow DOM.
-6. For stealth on sensitive sites, use stealth:true (but it shows debugger banner).
-7. After navigate or major changes, re-read_page.
-8. Use ensureVisible implicitly via the tools (scrolls targets into view).
-Be patient with SPAs - combine wait_for + read_page loops.`
-          }
-        }
-      ]
-    })
-  );
-}
-function formatSnapshot(snap) {
-  const lines = [
-    `URL: ${snap.url}`,
-    `Title: ${snap.title}`,
-    `Viewport: ${snap.viewport.width}x${snap.viewport.height} (scroll ${snap.viewport.scrollX},${snap.viewport.scrollY}, dpr ${snap.viewport.devicePixelRatio})`,
-    `Elements (${snap.elements.length}):`
-  ];
-  for (const e of snap.elements) {
-    const r = e.rect;
-    const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-    const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
-    const vis = e.visible !== void 0 ? e.visible ? " visible" : " hidden" : "";
-    const vp = e.inViewport !== void 0 ? e.inViewport ? " in-view" : " off-view" : "";
-    lines.push(
-      `  [${e.ref}] ${e.role}${name} <${e.tag}>${val} @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vis}${vp}`
-    );
-  }
-  if (snap.text) lines.push("", "Text:", truncate(snap.text, 4e3));
-  return lines.join("\n");
-}
-function truncate(s, n) {
-  return s.length > n ? `${s.slice(0, n)}\u2026` : s;
-}
-function formatElement(e) {
-  const r = e.rect;
-  const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-  const vp = e.inViewport === false ? " off-view" : "";
-  return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
-}
-
-// src/index.ts
-var port = Number(process.env.AGENTCURSOR_WS_PORT ?? DEFAULT_WS_PORT);
-var driverKind = (process.env.AGENTCURSOR_DRIVER ?? "extension").toLowerCase();
-var wsTransport = new ExtensionTransport(port);
-var driver = driverKind === "os" ? new OsCursorDriver(wsTransport) : new ExtensionDriver(wsTransport);
-var action = new ActionService(driver);
-function readVersion() {
-  try {
-    return JSON.parse(
-      readFileSync(new URL("../package.json", import.meta.url), "utf8")
-    ).version;
-  } catch {
-    return "0.0.0";
-  }
-}
-var server = new McpServer({ name: "agentcursor", version: readVersion() });
-registerTools(server, action);
-await server.connect(new StdioServerTransport());
-process.stderr.write(
-  `agentcursor: MCP ready (stdio, ${driverKind} driver); extension WebSocket on ws://127.0.0.1:${port}
-`
-);

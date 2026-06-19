@@ -6,6 +6,16 @@
   "bin": {
     "agentcursor": "dist/index.js"
   },
+  "main": "dist/lib.js",
+  "module": "dist/lib.js",
+  "types": "dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "extension/dist",
@@ -15,14 +25,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node build.mjs && node extension/build.mjs",
-    "build:server": "node build.mjs",
+    "build": "tsup && node extension/build.mjs",
+    "build:server": "tsup",
     "build:ext": "node extension/build.mjs",
     "reload": "AGENTCURSOR_BUMP=1 node extension/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node build.mjs && node scripts/smoke.mjs",
+    "smoke": "tsup && node scripts/smoke.mjs",
     "verify": "node scripts/verify-live.mjs",
     "demo": "node scripts/demo-drive.mjs",
     "dev": "tsx src/index.ts",
@@ -53,6 +63,7 @@
     "@types/node": "^25.9.3",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1",
+    "tsup": "^8.5.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
