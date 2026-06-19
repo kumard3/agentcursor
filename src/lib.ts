@@ -1,3 +1,7 @@
+export { AgentCursor } from "./sdk/agent-cursor";
+export type { ConnectOptions } from "./sdk/agent-cursor";
+export { Locator } from "./sdk/locator";
+export type { ByOptions, ByRoleOptions, LocatorContext } from "./sdk/locator";
 export { ActionService } from "./action/service";
 export {
   generateMove,
@@ -19,4 +23,7 @@ export type {
   CursorSample,
   DeliveryMode,
   MouseButton,
+  LocatorSpec,
+  LocatorStep,
+  LocatorMatch,
 } from "./protocol";

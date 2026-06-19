@@ -1,3 +1,6 @@
+// src/sdk/agent-cursor.ts
+import { writeFile } from "fs/promises";
+
 // src/path-engine/geometry.ts
 function distance(a, b) {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -222,12 +225,12 @@ var ActionService = class {
   async type(opts) {
     if (opts.ref) await this.click({ ref: opts.ref, stealth: opts.stealth });
     else if (opts.rect) await this.click({ rect: opts.rect, stealth: opts.stealth });
-    const delay = sampleKeyDelayMs(createRng());
+    const delay3 = sampleKeyDelayMs(createRng());
     await this.driver.type({
       text: opts.text,
       ref: opts.ref,
-      perKeyMinMs: delay.min,
-      perKeyMaxMs: delay.max,
+      perKeyMinMs: delay3.min,
+      perKeyMaxMs: delay3.max,
       mode: mode(opts.stealth),
       replace: opts.replace
     });
@@ -385,82 +388,6 @@ function rankByText(elements, query) {
   scored.sort((a, b) => b.score - a.score);
   return scored.map((s) => s.el);
 }
-
-// src/server/transport.ts
-import { randomUUID } from "crypto";
-import { WebSocket, WebSocketServer } from "ws";
-
-// src/protocol/index.ts
-var DEFAULT_WS_PORT = 8930;
-var PROTOCOL_VERSION = 1;
-
-// src/server/transport.ts
-var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
-var ExtensionTransport = class {
-  wss;
-  socket = null;
-  pending = /* @__PURE__ */ new Map();
-  constructor(port = DEFAULT_WS_PORT) {
-    this.wss = new WebSocketServer({ host: "127.0.0.1", port });
-    this.wss.on("error", (err) => {
-      if (err.code === "EADDRINUSE") {
-        process.stderr.write(
-          `agentcursor: port ${port} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
-`
-        );
-        process.exit(1);
-      }
-      process.stderr.write(`agentcursor: WebSocket server error: ${err.message}
-`);
-    });
-    this.wss.on("connection", (ws) => {
-      this.socket = ws;
-      ws.on("message", (data) => this.onMessage(data.toString()));
-      ws.on("close", () => {
-        if (this.socket === ws) this.socket = null;
-      });
-      ws.on("error", () => void 0);
-    });
-  }
-  get connected() {
-    return this.socket?.readyState === WebSocket.OPEN;
-  }
-  send(command, timeoutMs = 3e4) {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error(NOT_CONNECTED));
-    }
-    const id = randomUUID();
-    const envelope = { v: PROTOCOL_VERSION, id, command };
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Command '${command.kind}' timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      socket.send(JSON.stringify(envelope));
-    });
-  }
-  onMessage(raw) {
-    let result;
-    try {
-      result = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    const entry = this.pending.get(result.id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    this.pending.delete(result.id);
-    if (result.ok) entry.resolve(result.data);
-    else entry.reject(new Error(result.error));
-  }
-  close() {
-    for (const entry of this.pending.values()) clearTimeout(entry.timer);
-    this.pending.clear();
-    this.wss.close();
-  }
-};
 
 // src/drivers/extension-driver.ts
 var ACTION_TIMEOUT_MS = 6e4;
@@ -705,10 +632,315 @@ function nutButton(nut, button) {
   if (button === "middle") return nut.Button.MIDDLE;
   return nut.Button.LEFT;
 }
+
+// src/protocol/index.ts
+var DEFAULT_WS_PORT = 8930;
+var PROTOCOL_VERSION = 1;
+
+// src/server/transport.ts
+import { randomUUID } from "crypto";
+import { WebSocket, WebSocketServer } from "ws";
+var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
+var ExtensionTransport = class {
+  wss;
+  socket = null;
+  pending = /* @__PURE__ */ new Map();
+  constructor(port = DEFAULT_WS_PORT) {
+    this.wss = new WebSocketServer({ host: "127.0.0.1", port });
+    this.wss.on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        process.stderr.write(
+          `agentcursor: port ${port} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
+`
+        );
+        process.exit(1);
+      }
+      process.stderr.write(`agentcursor: WebSocket server error: ${err.message}
+`);
+    });
+    this.wss.on("connection", (ws) => {
+      this.socket = ws;
+      ws.on("message", (data) => this.onMessage(data.toString()));
+      ws.on("close", () => {
+        if (this.socket === ws) this.socket = null;
+      });
+      ws.on("error", () => void 0);
+    });
+  }
+  get connected() {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+  send(command, timeoutMs = 3e4) {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(NOT_CONNECTED));
+    }
+    const id = randomUUID();
+    const envelope = { v: PROTOCOL_VERSION, id, command };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Command '${command.kind}' timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      socket.send(JSON.stringify(envelope));
+    });
+  }
+  onMessage(raw) {
+    let result;
+    try {
+      result = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const entry = this.pending.get(result.id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.pending.delete(result.id);
+    if (result.ok) entry.resolve(result.data);
+    else entry.reject(new Error(result.error));
+  }
+  close() {
+    for (const entry of this.pending.values()) clearTimeout(entry.timer);
+    this.pending.clear();
+    this.wss.close();
+  }
+};
+
+// src/sdk/locator.ts
+var delay = (ms) => new Promise((r) => setTimeout(r, ms));
+var Locator = class _Locator {
+  constructor(ctx, spec) {
+    this.ctx = ctx;
+    this.spec = spec;
+  }
+  ctx;
+  spec;
+  locator(css) {
+    return this.step({ kind: "css", value: css });
+  }
+  getByRole(role, opts = {}) {
+    return this.step({ kind: "role", value: role, name: opts.name, exact: opts.exact });
+  }
+  getByText(text, opts = {}) {
+    return this.step({ kind: "text", value: text, exact: opts.exact });
+  }
+  getByLabel(text, opts = {}) {
+    return this.step({ kind: "label", value: text, exact: opts.exact });
+  }
+  getByPlaceholder(text, opts = {}) {
+    return this.step({ kind: "placeholder", value: text, exact: opts.exact });
+  }
+  getByTestId(id) {
+    return this.step({ kind: "testid", value: id });
+  }
+  filter(opts) {
+    return this.step({ kind: "filter", hasText: opts.hasText });
+  }
+  nth(index) {
+    return this.step({ kind: "nth", index });
+  }
+  first() {
+    return this.nth(0);
+  }
+  last() {
+    return this.nth(-1);
+  }
+  async click(opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.click({
+      rect: m.rect,
+      button: opts.button,
+      double: opts.double,
+      stealth: opts.stealth ?? this.ctx.stealth
+    });
+    return this;
+  }
+  dblclick(opts = {}) {
+    return this.click({ ...opts, double: true });
+  }
+  async hover(opts = {}) {
+    const m = await this.require();
+    const c = center(m.rect);
+    await this.ctx.action.hover({ x: c.x, y: c.y, stealth: opts.stealth ?? this.ctx.stealth });
+    return this;
+  }
+  async type(text, opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.type({ text, rect: m.rect, stealth: opts.stealth ?? this.ctx.stealth });
+    return this;
+  }
+  async fill(text, opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.type({ text, rect: m.rect, replace: true, stealth: opts.stealth ?? this.ctx.stealth });
+    return this;
+  }
+  async press(key, opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.click({ rect: m.rect, stealth: opts.stealth ?? this.ctx.stealth });
+    await this.ctx.action.pressKey(key, opts.stealth ?? this.ctx.stealth);
+    return this;
+  }
+  async dragTo(target, opts = {}) {
+    const from = await this.require();
+    const to = await target.require();
+    await this.ctx.action.drag({ rect: from.rect }, { rect: to.rect }, "left", opts.stealth ?? this.ctx.stealth);
+    return this;
+  }
+  async scrollIntoView() {
+    await this.require();
+    return this;
+  }
+  async boundingBox() {
+    const m = await this.resolve(false);
+    return m.count > 0 ? m.rect : null;
+  }
+  async textContent() {
+    const m = await this.resolve(false);
+    return m.count > 0 ? m.text : null;
+  }
+  async isVisible() {
+    const m = await this.resolve(false);
+    return m.count > 0 && m.visible;
+  }
+  async count() {
+    const m = await this.resolve(false);
+    return m.count;
+  }
+  async waitFor(opts = {}) {
+    const state = opts.state ?? "visible";
+    const deadline = Date.now() + (opts.timeout ?? 1e4);
+    for (; ; ) {
+      const m = await this.resolve(false, 0);
+      if (m.count > 0 && (state === "attached" || m.visible)) return this;
+      if (Date.now() >= deadline) {
+        throw new Error(`agentcursor: waitFor(${state}) timed out for locator [${describe(this.spec)}]`);
+      }
+      await delay(150);
+    }
+  }
+  step(s) {
+    return new _Locator(this.ctx, [...this.spec, s]);
+  }
+  resolve(scrollIntoView, timeoutMs = 5e3) {
+    return this.ctx.action.resolveLocator(this.spec, { timeoutMs, scrollIntoView });
+  }
+  async require() {
+    const m = await this.resolve(true);
+    if (m.count === 0) {
+      throw new Error(`agentcursor: no element matched locator [${describe(this.spec)}]`);
+    }
+    return m;
+  }
+};
+function center(r) {
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}
+function describe(spec) {
+  return spec.map(
+    (s) => s.kind === "filter" ? `filter(hasText=${s.hasText})` : s.kind === "nth" ? `nth(${s.index})` : `${s.kind}=${s.value}`
+  ).join(" >> ");
+}
+
+// src/sdk/agent-cursor.ts
+var delay2 = (ms) => new Promise((r) => setTimeout(r, ms));
+var AgentCursor = class _AgentCursor {
+  constructor(action, transport, opts) {
+    this.action = action;
+    this.transport = transport;
+    this.opts = opts;
+  }
+  action;
+  transport;
+  opts;
+  static connect(options = {}) {
+    return _AgentCursor.start(options, (t) => new ExtensionDriver(t));
+  }
+  static os(options = {}) {
+    return _AgentCursor.start(options, (t) => new OsCursorDriver(t));
+  }
+  static async start(options, makeDriver) {
+    const port = options.port ?? DEFAULT_WS_PORT;
+    const transport = new ExtensionTransport(port);
+    await waitForConnection(transport, port, options.timeoutMs ?? 15e3);
+    const action = new ActionService(makeDriver(transport));
+    return new _AgentCursor(action, transport, { stealth: options.stealth ?? false });
+  }
+  /** Escape hatch to the lower-level action service (move_to by coords, find, clickText, etc.). */
+  get actions() {
+    return this.action;
+  }
+  locator(css) {
+    return this.root().locator(css);
+  }
+  getByRole(role, opts) {
+    return this.root().getByRole(role, opts);
+  }
+  getByText(text, opts) {
+    return this.root().getByText(text, opts);
+  }
+  getByLabel(text, opts) {
+    return this.root().getByLabel(text, opts);
+  }
+  getByPlaceholder(text, opts) {
+    return this.root().getByPlaceholder(text, opts);
+  }
+  getByTestId(id) {
+    return this.root().getByTestId(id);
+  }
+  async navigate(url) {
+    await this.action.navigate(url);
+    return this;
+  }
+  goto(url) {
+    return this.navigate(url);
+  }
+  url() {
+    return this.action.getUrl();
+  }
+  async scroll(opts) {
+    await this.action.scroll({ dy: opts.dy, dx: opts.dx, stealth: opts.stealth ?? this.opts.stealth });
+    return this;
+  }
+  waitForText(text, opts = {}) {
+    return this.action.waitFor({ text, timeoutMs: opts.timeout });
+  }
+  async screenshot(opts = {}) {
+    const data = await this.action.screenshot(opts.format ?? "png");
+    if (opts.path) {
+      const base64 = data.replace(/^data:[^;]+;base64,/, "");
+      await writeFile(opts.path, Buffer.from(base64, "base64"));
+    }
+    return data;
+  }
+  async close() {
+    this.transport.close();
+  }
+  ctx() {
+    return { action: this.action, stealth: this.opts.stealth };
+  }
+  root() {
+    return new Locator(this.ctx(), []);
+  }
+};
+async function waitForConnection(t, port, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (!t.connected) {
+    if (Date.now() >= deadline) {
+      t.close();
+      throw new Error(
+        `agentcursor: no browser connected on ws://127.0.0.1:${port}. Open Chrome with the agentcursor extension loaded, or pass a different { port }.`
+      );
+    }
+    await delay2(150);
+  }
+}
 export {
   ActionService,
+  AgentCursor,
   ExtensionDriver,
   ExtensionTransport,
+  Locator,
   OsCursorDriver,
   createRng,
   generateMove,

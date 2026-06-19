@@ -301,6 +301,125 @@ declare class ActionService {
     private findElement;
 }
 
+interface LocatorContext {
+    action: ActionService;
+    stealth: boolean;
+}
+interface ByOptions {
+    exact?: boolean;
+}
+interface ByRoleOptions {
+    name?: string;
+    exact?: boolean;
+}
+/**
+ * A lazy, Playwright-shaped handle to an element. Chaining and filtering build
+ * up a serializable spec; an action resolves the spec to a rect and then drives
+ * the human cursor through ActionService.
+ */
+declare class Locator {
+    private readonly ctx;
+    private readonly spec;
+    constructor(ctx: LocatorContext, spec: LocatorSpec);
+    locator(css: string): Locator;
+    getByRole(role: string, opts?: ByRoleOptions): Locator;
+    getByText(text: string, opts?: ByOptions): Locator;
+    getByLabel(text: string, opts?: ByOptions): Locator;
+    getByPlaceholder(text: string, opts?: ByOptions): Locator;
+    getByTestId(id: string): Locator;
+    filter(opts: {
+        hasText: string;
+    }): Locator;
+    nth(index: number): Locator;
+    first(): Locator;
+    last(): Locator;
+    click(opts?: {
+        button?: MouseButton;
+        double?: boolean;
+        stealth?: boolean;
+    }): Promise<Locator>;
+    dblclick(opts?: {
+        button?: MouseButton;
+        stealth?: boolean;
+    }): Promise<Locator>;
+    hover(opts?: {
+        stealth?: boolean;
+    }): Promise<Locator>;
+    type(text: string, opts?: {
+        stealth?: boolean;
+    }): Promise<Locator>;
+    fill(text: string, opts?: {
+        stealth?: boolean;
+    }): Promise<Locator>;
+    press(key: string, opts?: {
+        stealth?: boolean;
+    }): Promise<Locator>;
+    dragTo(target: Locator, opts?: {
+        stealth?: boolean;
+    }): Promise<Locator>;
+    scrollIntoView(): Promise<Locator>;
+    boundingBox(): Promise<Rect | null>;
+    textContent(): Promise<string | null>;
+    isVisible(): Promise<boolean>;
+    count(): Promise<number>;
+    waitFor(opts?: {
+        state?: "visible" | "attached";
+        timeout?: number;
+    }): Promise<Locator>;
+    private step;
+    private resolve;
+    private require;
+}
+
+interface ConnectOptions {
+    /** WebSocket port the extension connects to (default 8930). */
+    port?: number;
+    /** Deliver events via CDP (isTrusted=true) instead of synthetic DOM events. */
+    stealth?: boolean;
+    /** How long to wait for the browser/extension to connect (default 15s). */
+    timeoutMs?: number;
+}
+/**
+ * Programmatic entry point. Playwright-shaped locator API where every action is
+ * driven by the human-cursor engine. Lifecycles: connect() attaches to a running
+ * Chrome with the extension loaded; os() drives the real OS cursor via nut-js.
+ */
+declare class AgentCursor {
+    private readonly action;
+    private readonly transport;
+    private readonly opts;
+    private constructor();
+    static connect(options?: ConnectOptions): Promise<AgentCursor>;
+    static os(options?: ConnectOptions): Promise<AgentCursor>;
+    private static start;
+    /** Escape hatch to the lower-level action service (move_to by coords, find, clickText, etc.). */
+    get actions(): ActionService;
+    locator(css: string): Locator;
+    getByRole(role: string, opts?: ByRoleOptions): Locator;
+    getByText(text: string, opts?: ByOptions): Locator;
+    getByLabel(text: string, opts?: ByOptions): Locator;
+    getByPlaceholder(text: string, opts?: ByOptions): Locator;
+    getByTestId(id: string): Locator;
+    navigate(url: string): Promise<AgentCursor>;
+    goto(url: string): Promise<AgentCursor>;
+    url(): Promise<string>;
+    scroll(opts: {
+        dy: number;
+        dx?: number;
+        stealth?: boolean;
+    }): Promise<AgentCursor>;
+    waitForText(text: string, opts?: {
+        timeout?: number;
+    }): Promise<boolean>;
+    screenshot(opts?: {
+        format?: "png" | "jpeg";
+        path?: string;
+    }): Promise<string>;
+    close(): Promise<void>;
+    private ctx;
+    private root;
+}
+
 interface Rng {
     /** uniform in [0, 1) */
     next(): number;
@@ -423,4 +542,4 @@ declare class OsCursorDriver implements BrowserDriver {
     private geometry;
 }
 
-export { ActionService, type BrowserDriver, type CursorSample, type DeliveryMode, ExtensionDriver, ExtensionTransport, type MouseButton, OsCursorDriver, type PageElement, type PageSnapshot, type Point, type Rect, createRng, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs };
+export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, type CursorSample, type DeliveryMode, ExtensionDriver, ExtensionTransport, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type PageElement, type PageSnapshot, type Point, type Rect, createRng, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs };
