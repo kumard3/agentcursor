@@ -1,6 +1,7 @@
 import type {
   CursorSample,
   DeliveryMode,
+  KeyOp,
   LocatorMatch,
   LocatorSpec,
   MouseButton,
@@ -26,6 +27,8 @@ export interface TypeArgs {
   perKeyMaxMs: number;
   mode: DeliveryMode;
   replace?: boolean;
+  /** persona keystroke schedule; content/OS drivers render it, stealth ignores it */
+  schedule?: KeyOp[];
 }
 
 export interface ScrollArgs {

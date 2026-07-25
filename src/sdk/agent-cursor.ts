@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { ActionService } from "../action/service";
 import { ExtensionDriver } from "../drivers/extension-driver";
 import { OsCursorDriver } from "../drivers/os-cursor-driver";
+import { createPersona } from "../persona";
 import { DEFAULT_WS_PORT } from "../protocol";
 import { ExtensionTransport } from "../server/transport";
 import { Locator } from "./locator";
@@ -16,6 +17,8 @@ export interface ConnectOptions {
   stealth?: boolean;
   /** How long to wait for the browser/extension to connect (default 15s). */
   timeoutMs?: number;
+  /** Persona seed. Same seed reproduces the same "person" (motion + typing); omit for a fresh one. */
+  seed?: number;
 }
 
 /**
@@ -45,7 +48,7 @@ export class AgentCursor {
     const port = options.port ?? DEFAULT_WS_PORT;
     const transport = new ExtensionTransport(port);
     await waitForConnection(transport, port, options.timeoutMs ?? 15_000);
-    const action = new ActionService(makeDriver(transport));
+    const action = new ActionService(makeDriver(transport), createPersona(options.seed));
     return new AgentCursor(action, transport, { stealth: options.stealth ?? false });
   }
 

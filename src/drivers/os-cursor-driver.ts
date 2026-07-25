@@ -11,6 +11,7 @@ import type {
 } from "../protocol";
 import type { ExtensionTransport } from "../server/transport";
 import { rand, sleep, sleepUntil } from "../util/timing";
+import { scheduleToKeystrokes } from "../persona/typing";
 import { screenToViewport, viewportToScreen } from "./coord-map";
 import type {
   BrowserDriver,
@@ -176,6 +177,16 @@ export class OsCursorDriver implements BrowserDriver {
   async type(args: TypeArgs): Promise<void> {
     const nut = await this.ensureNut();
     nut.keyboard.config.autoDelayMs = 0;
+    // nut-js here types literal characters (no live backspace), so render the
+    // persona schedule's surviving keystrokes with their delays — persona timing
+    // on the final text, without visible typo corrections.
+    if (args.schedule?.length) {
+      for (const k of scheduleToKeystrokes(args.schedule)) {
+        await nut.keyboard.type(k.ch);
+        await sleep(Math.max(0, k.delayMs));
+      }
+      return;
+    }
     for (const ch of args.text) {
       await nut.keyboard.type(ch);
       await sleep(rand(args.perKeyMinMs, args.perKeyMaxMs));

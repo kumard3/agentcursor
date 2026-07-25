@@ -59,6 +59,15 @@ export interface WindowGeometry {
 export type DeliveryMode = "content" | "debugger";
 export type MouseButton = "left" | "right" | "middle";
 
+/**
+ * A single typing operation. `key` inserts a character after `delayMs`; `back`
+ * deletes one character (used to render a typo correction). Applying a whole
+ * schedule left to right yields the intended final text.
+ */
+export type KeyOp =
+  | { t: "key"; ch: string; delayMs: number }
+  | { t: "back"; delayMs: number };
+
 /** A serializable, Playwright-style locator query. Resolved in the content script. */
 export type LocatorStep =
   | { kind: "css"; value: string }
@@ -103,6 +112,9 @@ export type Command =
       perKeyMaxMs: number;
       mode: DeliveryMode;
       replace?: boolean;
+      /** Persona keystroke schedule (bursts, boundary pauses, typo corrections).
+       * When present, content/OS drivers render it; stealth ignores it and inserts `text`. */
+      schedule?: KeyOp[];
     }
   | { kind: "scroll"; dx: number; dy: number; steps: number; mode: DeliveryMode }
   | { kind: "navigate"; url: string }

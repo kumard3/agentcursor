@@ -3,6 +3,9 @@ export type { ConnectOptions } from "./sdk/agent-cursor";
 export { Locator } from "./sdk/locator";
 export type { ByOptions, ByRoleOptions, LocatorContext } from "./sdk/locator";
 export { ActionService } from "./action/service";
+export { Persona, createPersona } from "./persona";
+export type { PersonaTraits, PersonaInfo, PersonaOptions } from "./persona";
+export { buildTypingSchedule, flattenSchedule, scheduleToKeystrokes } from "./persona/typing";
 export {
   generateMove,
   offCenterPoint,
@@ -26,4 +29,5 @@ export type {
   LocatorSpec,
   LocatorStep,
   LocatorMatch,
+  KeyOp,
 } from "./protocol";

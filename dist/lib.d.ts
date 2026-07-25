@@ -40,6 +40,19 @@ interface PageSnapshot {
 }
 type DeliveryMode = "content" | "debugger";
 type MouseButton = "left" | "right" | "middle";
+/**
+ * A single typing operation. `key` inserts a character after `delayMs`; `back`
+ * deletes one character (used to render a typo correction). Applying a whole
+ * schedule left to right yields the intended final text.
+ */
+type KeyOp = {
+    t: "key";
+    ch: string;
+    delayMs: number;
+} | {
+    t: "back";
+    delayMs: number;
+};
 /** A serializable, Playwright-style locator query. Resolved in the content script. */
 type LocatorStep = {
     kind: "css";
@@ -108,6 +121,9 @@ type Command = {
     perKeyMaxMs: number;
     mode: DeliveryMode;
     replace?: boolean;
+    /** Persona keystroke schedule (bursts, boundary pauses, typo corrections).
+     * When present, content/OS drivers render it; stealth ignores it and inserts `text`. */
+    schedule?: KeyOp[];
 } | {
     kind: "scroll";
     dx: number;
@@ -174,6 +190,8 @@ interface TypeArgs {
     perKeyMaxMs: number;
     mode: DeliveryMode;
     replace?: boolean;
+    /** persona keystroke schedule; content/OS drivers render it, stealth ignores it */
+    schedule?: KeyOp[];
 }
 interface ScrollArgs {
     dx: number;
@@ -223,6 +241,90 @@ interface BrowserDriver {
     }): Promise<LocatorMatch>;
 }
 
+interface Rng {
+    /** uniform in [0, 1) */
+    next(): number;
+    range(min: number, max: number): number;
+    int(min: number, max: number): number;
+    gaussian(mean?: number, std?: number): number;
+    /** right-skewed value in [min, max]; higher power = stronger skew toward min */
+    skewed(min: number, max: number, power?: number): number;
+    bool(p: number): boolean;
+}
+/**
+ * Seedable mulberry32 PRNG. A seed exists only so tests can assert
+ * determinism; production calls omit it and draw fresh entropy each move.
+ */
+declare function createRng(seed?: number): Rng;
+
+/**
+ * One person's stable motor + typing signature. Sampled once from the seed;
+ * every action reads these so a whole session reads as the same person.
+ */
+interface PersonaTraits {
+    /** move-duration divisor: >1 faster, <1 slower */
+    speedFactor: number;
+    /** Bézier bow scale */
+    curviness: number;
+    /** hand-tremor amplitude, px */
+    jitterPx: number;
+    /** chance of an overshoot-and-correct on a long move */
+    overshootProb: number;
+    /** overshoot distance as a fraction of travel */
+    overshootMag: number;
+    /** off-center click spread as a fraction of the target */
+    precision: number;
+    /** pre-click dwell multiplier */
+    dwellScale: number;
+    /** button-hold multiplier */
+    pressScale: number;
+    /** typing speed, words per minute */
+    wpm: number;
+    /** per-character typo probability */
+    errorRate: number;
+    /** base reaction delay, ms */
+    reactionMs: number;
+    /** think-time multiplier */
+    thinkScale: number;
+    /** reading pause per visible character, ms */
+    readMsPerChar: number;
+    /** curvature side bias, -1 or +1 */
+    handedness: number;
+}
+interface PersonaInfo {
+    seed: number;
+    traits: PersonaTraits;
+    actionCount: number;
+    fatigue: number;
+}
+interface PersonaOptions {
+    seed?: number;
+    /** injectable clock (ms) so tests can drive fatigue deterministically */
+    now?: () => number;
+}
+declare class Persona {
+    readonly seed: number;
+    readonly rng: Rng;
+    readonly base: PersonaTraits;
+    private actions;
+    private readonly startMs;
+    private readonly clock;
+    constructor(opts?: PersonaOptions);
+    /** Advance fatigue bookkeeping; call once per action. */
+    tick(): void;
+    /** 0..FATIGUE_MAX, grows with elapsed session time. */
+    get fatigue(): number;
+    /** Traits after fatigue drift (slower, shakier, more hesitant over time). */
+    traits(): PersonaTraits;
+    info(): PersonaInfo;
+    /** Cognitive delay before an action; `distancePx` is the cursor travel. */
+    thinkTimeMs(distancePx?: number): number;
+    /** Pause to "read" `chars` of freshly surfaced text, capped. */
+    readPauseMs(chars: number): number;
+    keySchedule(text: string): KeyOp[];
+}
+declare function createPersona(seed?: number, opts?: Omit<PersonaOptions, "seed">): Persona;
+
 interface TargetOpts {
     ref?: string;
     x?: number;
@@ -238,7 +340,10 @@ declare class ActionService {
     private readonly driver;
     private snapshot;
     private lastPos;
-    constructor(driver: BrowserDriver);
+    private readonly persona;
+    constructor(driver: BrowserDriver, persona?: Persona);
+    /** The active session persona (seed + traits), for status/inspection. */
+    personaInfo(): PersonaInfo;
     readPage(maxElements?: number, includeText?: boolean): Promise<PageSnapshot>;
     moveTo(opts: TargetOpts & {
         stealth?: boolean;
@@ -298,6 +403,12 @@ declare class ActionService {
     private ensureStart;
     private ensureFresh;
     private resolveTarget;
+    /** Persona-shaped options for the path engine (one coherent motor signature). */
+    private moveParams;
+    /** Cognitive delay before an action. */
+    private think;
+    /** A small settle move while waiting, the way a hand never sits perfectly still. */
+    private idleDrift;
     private findElement;
 }
 
@@ -378,6 +489,8 @@ interface ConnectOptions {
     stealth?: boolean;
     /** How long to wait for the browser/extension to connect (default 15s). */
     timeoutMs?: number;
+    /** Persona seed. Same seed reproduces the same "person" (motion + typing); omit for a fresh one. */
+    seed?: number;
 }
 /**
  * Programmatic entry point. Playwright-shaped locator API where every action is
@@ -420,36 +533,56 @@ declare class AgentCursor {
     private root;
 }
 
-interface Rng {
-    /** uniform in [0, 1) */
-    next(): number;
-    range(min: number, max: number): number;
-    int(min: number, max: number): number;
-    gaussian(mean?: number, std?: number): number;
-    /** right-skewed value in [min, max]; higher power = stronger skew toward min */
-    skewed(min: number, max: number, power?: number): number;
-    bool(p: number): boolean;
+/** Traits the typing scheduler reads (subset of PersonaTraits). */
+interface TypingTraits {
+    wpm: number;
+    errorRate: number;
+    reactionMs: number;
 }
 /**
- * Seedable mulberry32 PRNG. A seed exists only so tests can assert
- * determinism; production calls omit it and draw fresh entropy each move.
+ * Turn text into a human keystroke schedule: burst timing, longer pauses at word
+ * and sentence boundaries, a slower first key (reaction), and occasional typos
+ * that are immediately backspaced and corrected. Invariant: flattenSchedule of
+ * the result equals `text`.
  */
-declare function createRng(seed?: number): Rng;
+declare function buildTypingSchedule(text: string, rng: Rng, traits: TypingTraits): KeyOp[];
+/** Net text after applying every insert/backspace — what the field ends up with. */
+declare function flattenSchedule(ops: KeyOp[]): string;
+/**
+ * Reduce a schedule to only the keystrokes that survive its backspaces, each
+ * carrying a delay. For drivers that can't render a live backspace (nut-js OS
+ * typing), so they still get persona timing on the final text without typos.
+ */
+declare function scheduleToKeystrokes(ops: KeyOp[]): Array<{
+    ch: string;
+    delayMs: number;
+}>;
 
 interface MoveOptions {
     rng?: Rng;
     /** approximate target size, feeds Fitts duration; default 24 */
     targetWidth?: number;
-    /** Gaussian jitter amplitude in px; default 1.4 */
-    jitter?: number;
     /** allow overshoot-and-correct on long moves; default true */
     overshoot?: boolean;
+    /** persona: move-duration divisor; default 1 */
+    speedFactor?: number;
+    /** persona: Bézier bow scale; default 1 */
+    curviness?: number;
+    /** persona: Gaussian jitter amplitude in px; default 1.4 */
+    jitterPx?: number;
+    /** persona: overshoot chance on a long move; default 0.5 */
+    overshootProb?: number;
+    /** persona: overshoot distance as fraction of travel; default 0.12 */
+    overshootMag?: number;
+    /** persona: -1/+1 curvature side bias; 0 = unbiased (default) */
+    handedness?: number;
 }
 declare function generateMove(from: Point, to: Point, options?: MoveOptions): CursorSample[];
-/** A point inside the rect, offset from dead-center (humans miss the middle). */
-declare function offCenterPoint(rect: Rect, rng?: Rng): Point;
-declare function sampleDwellMs(rng?: Rng): number;
-declare function samplePressMs(rng?: Rng): number;
+/** A point inside the rect, offset from dead-center (humans miss the middle).
+ * `precision` is the spread as a fraction of the target; smaller = tighter. */
+declare function offCenterPoint(rect: Rect, rng?: Rng, precision?: number): Point;
+declare function sampleDwellMs(rng?: Rng, dwellScale?: number): number;
+declare function samplePressMs(rng?: Rng, pressScale?: number): number;
 declare function sampleKeyDelayMs(rng?: Rng): {
     min: number;
     max: number;
@@ -542,4 +675,4 @@ declare class OsCursorDriver implements BrowserDriver {
     private geometry;
 }
 
-export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, type CursorSample, type DeliveryMode, ExtensionDriver, ExtensionTransport, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type PageElement, type PageSnapshot, type Point, type Rect, createRng, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs };
+export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, type CursorSample, type DeliveryMode, ExtensionDriver, ExtensionTransport, type KeyOp, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type PageElement, type PageSnapshot, Persona, type PersonaInfo, type PersonaOptions, type PersonaTraits, type Point, type Rect, buildTypingSchedule, createPersona, createRng, flattenSchedule, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs, scheduleToKeystrokes };

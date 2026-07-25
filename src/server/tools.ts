@@ -233,6 +233,8 @@ export function registerTools(server: McpServer, action: ActionService): void {
     async () => {
       const url = await action.getUrl().catch(() => null);
       const connected = url !== null;
+      const p = action.personaInfo();
+      const t = p.traits;
       return text(
         [
           `driver: ${process.env.AGENTCURSOR_DRIVER ?? "extension"}`,
@@ -240,6 +242,10 @@ export function registerTools(server: McpServer, action: ActionService): void {
           `active_url: ${url ?? "none (extension not connected or no http tab)"}`,
           `ws_port: ${process.env.AGENTCURSOR_WS_PORT ?? 8930}`,
           "protocol_version: 1",
+          `persona_seed: ${p.seed} (set AGENTCURSOR_SEED to reproduce)`,
+          `persona_actions: ${p.actionCount}`,
+          `persona_fatigue: ${p.fatigue.toFixed(3)}`,
+          `persona_traits: speed=${t.speedFactor.toFixed(2)} curviness=${t.curviness.toFixed(2)} jitter=${t.jitterPx.toFixed(2)}px precision=${t.precision.toFixed(2)} wpm=${Math.round(t.wpm)} errorRate=${t.errorRate.toFixed(3)}`,
         ].join("\n"),
       );
     },

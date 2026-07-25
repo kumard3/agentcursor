@@ -24,11 +24,11 @@ function smootherstep(t) {
 }
 
 // src/path-engine/profile.ts
-function fittsDurationMs(dist, targetWidth, rng) {
+function fittsDurationMs(dist, targetWidth, rng, speedFactor = 1) {
   const a = rng.range(70, 130);
   const b = rng.range(80, 150);
   const id = Math.log2(dist / Math.max(targetWidth, 6) + 1);
-  return Math.max(90, a + b * id);
+  return Math.max(90, (a + b * id) / speedFactor);
 }
 function stepCount(durationMs, rng) {
   return Math.round(clamp(durationMs / rng.range(14, 20), 8, 140));
@@ -61,16 +61,22 @@ function createRng(seed) {
 
 // src/path-engine/index.ts
 var OVERSHOOT_MIN_DISTANCE = 180;
-var OVERSHOOT_PROB = 0.5;
 function generateMove(from, to, options = {}) {
   const rng = options.rng ?? createRng();
   const targetWidth = options.targetWidth ?? 24;
-  const jitterAmp = options.jitter ?? 1.4;
   const allowOvershoot = options.overshoot ?? true;
+  const seg = {
+    targetWidth,
+    correction: false,
+    speedFactor: options.speedFactor ?? 1,
+    curviness: options.curviness ?? 1,
+    jitterAmp: options.jitterPx ?? 1.4,
+    handedness: options.handedness ?? 0
+  };
   const total = distance(from, to);
   const legs = [];
-  if (allowOvershoot && total > OVERSHOOT_MIN_DISTANCE && rng.bool(OVERSHOOT_PROB)) {
-    const past = overshootPoint(from, to, rng);
+  if (allowOvershoot && total > OVERSHOOT_MIN_DISTANCE && rng.bool(options.overshootProb ?? 0.5)) {
+    const past = overshootPoint(from, to, rng, options.overshootMag ?? 0.12);
     legs.push({ a: from, b: past, correction: false });
     legs.push({ a: past, b: to, correction: true });
   } else {
@@ -79,12 +85,10 @@ function generateMove(from, to, options = {}) {
   const samples = [];
   let tOffset = 0;
   for (const leg of legs) {
-    const seg = buildSegment(leg.a, leg.b, rng, {
-      targetWidth,
-      jitterAmp,
-      correction: leg.correction
-    });
-    for (const s of seg) samples.push({ x: s.x, y: s.y, t: s.t + tOffset });
+    const seg2 = { ...seg, correction: leg.correction };
+    for (const s of buildSegment(leg.a, leg.b, rng, seg2)) {
+      samples.push({ x: s.x, y: s.y, t: s.t + tOffset });
+    }
     const last = samples.at(-1);
     tOffset = (last?.t ?? tOffset) + rng.range(12, 45);
   }
@@ -95,7 +99,8 @@ function buildSegment(a, b, rng, opts) {
   const baseDuration = fittsDurationMs(
     dist,
     opts.correction ? Math.max(opts.targetWidth, 12) : opts.targetWidth,
-    rng
+    rng,
+    opts.speedFactor
   );
   const duration = baseDuration * (opts.correction ? 0.55 : 1);
   const steps = stepCount(duration, rng);
@@ -105,8 +110,8 @@ function buildSegment(a, b, rng, opts) {
   const len = Math.max(Math.hypot(dx, dy), 1e-4);
   const nx = -dy / len;
   const ny = dx / len;
-  const side = rng.bool(0.5) ? 1 : -1;
-  const bow = side * rng.range(dist * 0.04, dist * 0.16);
+  const side = opts.handedness !== 0 ? (rng.bool(0.75) ? 1 : -1) * Math.sign(opts.handedness) : rng.bool(0.5) ? 1 : -1;
+  const bow = side * rng.range(dist * 0.04, dist * 0.16) * opts.curviness;
   const c1 = {
     x: a.x + dx * 0.3 + nx * bow * rng.range(0.7, 1),
     y: a.y + dy * 0.3 + ny * bow * rng.range(0.7, 1)
@@ -132,13 +137,13 @@ function buildSegment(a, b, rng, opts) {
   out[out.length - 1] = { x: b.x, y: b.y, t: tAcc };
   return out;
 }
-function overshootPoint(from, to, rng) {
+function overshootPoint(from, to, rng, mag) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const len = Math.max(Math.hypot(dx, dy), 1e-4);
   const ux = dx / len;
   const uy = dy / len;
-  const over = Math.min(len * 0.12, 110) * rng.range(0.5, 1.1);
+  const over = Math.min(len * mag, 110) * rng.range(0.5, 1.1);
   const perp = rng.gaussian(0, 8);
   return { x: to.x + ux * over - uy * perp, y: to.y + uy * over + ux * perp };
 }
@@ -152,30 +157,196 @@ function monotonic(samples) {
   }
   return out;
 }
-function offCenterPoint(rect, rng = createRng()) {
+function offCenterPoint(rect, rng = createRng(), precision = 0.18) {
   const cx = rect.x + rect.width / 2;
   const cy = rect.y + rect.height / 2;
   const ox = clamp(
-    rng.gaussian(0, rect.width * 0.18),
+    rng.gaussian(0, rect.width * precision),
     -rect.width * 0.4,
     rect.width * 0.4
   );
   const oy = clamp(
-    rng.gaussian(0, rect.height * 0.18),
+    rng.gaussian(0, rect.height * precision),
     -rect.height * 0.4,
     rect.height * 0.4
   );
   return { x: cx + ox, y: cy + oy };
 }
-function sampleDwellMs(rng = createRng()) {
-  return Math.round(rng.skewed(60, 300, 2));
+function sampleDwellMs(rng = createRng(), dwellScale = 1) {
+  return Math.round(clamp(rng.skewed(60, 300, 2) * dwellScale, 40, 520));
 }
-function samplePressMs(rng = createRng()) {
-  return Math.round(rng.skewed(45, 130, 1.8));
+function samplePressMs(rng = createRng(), pressScale = 1) {
+  return Math.round(rng.skewed(45, 130, 1.8) * pressScale);
 }
 function sampleKeyDelayMs(rng = createRng()) {
   const base = rng.range(55, 110);
   return { min: Math.round(base * 0.6), max: Math.round(base * 1.8) };
+}
+
+// src/persona/typing.ts
+var NEIGHBORS = {
+  a: "sqwz",
+  b: "vghn",
+  c: "xdfv",
+  d: "serfcx",
+  e: "wsdr",
+  f: "drtgvc",
+  g: "ftyhbv",
+  h: "gyujnb",
+  i: "ujko",
+  j: "huikmn",
+  k: "jiolm",
+  l: "kop",
+  m: "njk",
+  n: "bhjm",
+  o: "iklp",
+  p: "ol",
+  q: "wa",
+  r: "edft",
+  s: "awedxz",
+  t: "rfgy",
+  u: "yhji",
+  v: "cfgb",
+  w: "qase",
+  x: "zsdc",
+  y: "tghu",
+  z: "asx"
+};
+function wrongChar(ch, rng) {
+  const lower = ch.toLowerCase();
+  const opts = NEIGHBORS[lower];
+  if (!opts) return null;
+  const pick = opts[rng.int(0, opts.length - 1)];
+  return ch === lower ? pick : pick.toUpperCase();
+}
+function buildTypingSchedule(text, rng, traits) {
+  const base = 12e3 / traits.wpm;
+  const ops = [];
+  let first = true;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const prev = text[i - 1];
+    let delay3 = Math.max(8, rng.gaussian(base, base * 0.35));
+    if (first) {
+      delay3 += traits.reactionMs * rng.range(0.6, 1.1);
+      first = false;
+    } else if (prev === " ") {
+      delay3 += base * rng.range(1.5, 3.5);
+    } else if (prev && ".?!".includes(prev)) {
+      delay3 += base * rng.range(3, 6);
+    } else if (rng.bool(0.06)) {
+      delay3 += base * rng.range(2, 5);
+    }
+    if (/[a-zA-Z]/.test(ch) && rng.bool(traits.errorRate)) {
+      const wrong = wrongChar(ch, rng);
+      if (wrong) {
+        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay3) });
+        ops.push({ t: "back", delayMs: Math.round(base * rng.range(2, 5)) });
+        ops.push({ t: "key", ch, delayMs: Math.round(base * rng.range(0.8, 1.4)) });
+        continue;
+      }
+    }
+    ops.push({ t: "key", ch, delayMs: Math.round(delay3) });
+  }
+  return ops;
+}
+function flattenSchedule(ops) {
+  let out = "";
+  for (const op of ops) {
+    if (op.t === "key") out += op.ch;
+    else out = out.slice(0, -1);
+  }
+  return out;
+}
+function scheduleToKeystrokes(ops) {
+  const stack = [];
+  for (const op of ops) {
+    if (op.t === "key") stack.push({ ch: op.ch, delayMs: op.delayMs });
+    else stack.pop();
+  }
+  return stack;
+}
+
+// src/persona/index.ts
+var FATIGUE_FULL_MS = 20 * 6e4;
+var FATIGUE_MAX = 0.15;
+var Persona = class {
+  seed;
+  rng;
+  base;
+  actions = 0;
+  startMs;
+  clock;
+  constructor(opts = {}) {
+    this.seed = (opts.seed ?? Math.floor(Math.random() * 4294967295)) >>> 0;
+    this.rng = createRng(this.seed);
+    this.clock = opts.now ?? (() => Date.now());
+    this.startMs = this.clock();
+    this.base = sampleTraits(this.rng);
+  }
+  /** Advance fatigue bookkeeping; call once per action. */
+  tick() {
+    this.actions++;
+  }
+  /** 0..FATIGUE_MAX, grows with elapsed session time. */
+  get fatigue() {
+    return clamp((this.clock() - this.startMs) / FATIGUE_FULL_MS, 0, 1) * FATIGUE_MAX;
+  }
+  /** Traits after fatigue drift (slower, shakier, more hesitant over time). */
+  traits() {
+    const f = this.fatigue;
+    return {
+      ...this.base,
+      speedFactor: this.base.speedFactor * (1 - f),
+      jitterPx: this.base.jitterPx * (1 + 0.4 * f),
+      thinkScale: this.base.thinkScale * (1 + 0.5 * f)
+    };
+  }
+  info() {
+    return { seed: this.seed, traits: this.traits(), actionCount: this.actions, fatigue: this.fatigue };
+  }
+  /** Cognitive delay before an action; `distancePx` is the cursor travel. */
+  thinkTimeMs(distancePx = 0) {
+    const t = this.traits();
+    const reaction = t.reactionMs * this.rng.range(0.7, 1.3);
+    const decide = Math.min(distancePx, 1200) * 0.06 * this.rng.range(0.5, 1.5);
+    return Math.round((reaction + decide) * t.thinkScale);
+  }
+  /** Pause to "read" `chars` of freshly surfaced text, capped. */
+  readPauseMs(chars) {
+    const t = this.traits();
+    const raw = Math.min(chars, 600) * t.readMsPerChar * this.rng.range(0.6, 1.4);
+    return Math.round(clamp(raw, 120, 4e3));
+  }
+  keySchedule(text) {
+    const t = this.traits();
+    return buildTypingSchedule(text, this.rng, {
+      wpm: t.wpm,
+      errorRate: t.errorRate,
+      reactionMs: t.reactionMs
+    });
+  }
+};
+function createPersona(seed, opts = {}) {
+  return new Persona({ seed, ...opts });
+}
+function sampleTraits(rng) {
+  return {
+    speedFactor: rng.range(0.75, 1.35),
+    curviness: rng.range(0.6, 1.5),
+    jitterPx: rng.range(0.7, 2.2),
+    overshootProb: rng.range(0.25, 0.7),
+    overshootMag: rng.range(0.08, 0.16),
+    precision: rng.range(0.1, 0.26),
+    dwellScale: rng.range(0.7, 1.5),
+    pressScale: rng.range(0.75, 1.4),
+    wpm: rng.range(180, 420),
+    errorRate: rng.range(0, 0.05),
+    reactionMs: rng.range(180, 520),
+    thinkScale: rng.range(0.7, 1.5),
+    readMsPerChar: rng.range(8, 22),
+    handedness: rng.bool(0.5) ? 1 : -1
+  };
 }
 
 // src/util/timing.ts
@@ -185,12 +356,18 @@ var rand = (min, max) => min + Math.random() * (max - min);
 
 // src/action/service.ts
 var ActionService = class {
-  constructor(driver) {
+  constructor(driver, persona) {
     this.driver = driver;
+    this.persona = persona ?? createPersona();
   }
   driver;
   snapshot = null;
   lastPos = null;
+  persona;
+  /** The active session persona (seed + traits), for status/inspection. */
+  personaInfo() {
+    return this.persona.info();
+  }
   async readPage(maxElements = 200, includeText = true) {
     this.snapshot = await this.driver.snapshot(maxElements, includeText);
     return this.snapshot;
@@ -199,7 +376,9 @@ var ActionService = class {
     await this.ensureFresh(opts.ref);
     const from = await this.ensureStart();
     const { point, width } = await this.resolveTarget(opts);
-    const samples = generateMove(from, point, { targetWidth: width });
+    this.persona.tick();
+    await this.think(distance(from, point));
+    const samples = generateMove(from, point, this.moveParams(width));
     await this.driver.move(samples, mode(opts.stealth));
     this.lastPos = point;
     return point;
@@ -208,15 +387,17 @@ var ActionService = class {
     await this.ensureFresh(opts.ref);
     const from = await this.ensureStart();
     const { point, width } = await this.resolveTarget(opts);
-    const rng = createRng();
-    const samples = generateMove(from, point, { targetWidth: width, rng });
+    this.persona.tick();
+    await this.think(distance(from, point));
+    const t = this.persona.traits();
+    const samples = generateMove(from, point, this.moveParams(width));
     await this.driver.click({
       samples,
       target: point,
       button: opts.button ?? "left",
       dblclick: opts.double ?? false,
-      preClickDwellMs: sampleDwellMs(rng),
-      pressMs: samplePressMs(rng),
+      preClickDwellMs: sampleDwellMs(this.persona.rng, t.dwellScale),
+      pressMs: samplePressMs(this.persona.rng, t.pressScale),
       mode: mode(opts.stealth)
     });
     this.lastPos = point;
@@ -225,14 +406,17 @@ var ActionService = class {
   async type(opts) {
     if (opts.ref) await this.click({ ref: opts.ref, stealth: opts.stealth });
     else if (opts.rect) await this.click({ rect: opts.rect, stealth: opts.stealth });
-    const delay3 = sampleKeyDelayMs(createRng());
+    this.persona.tick();
+    const base = 12e3 / this.persona.traits().wpm;
+    const schedule = opts.replace ? void 0 : this.persona.keySchedule(opts.text);
     await this.driver.type({
       text: opts.text,
       ref: opts.ref,
-      perKeyMinMs: delay3.min,
-      perKeyMaxMs: delay3.max,
+      perKeyMinMs: Math.round(base * 0.6),
+      perKeyMaxMs: Math.round(base * 1.8),
       mode: mode(opts.stealth),
-      replace: opts.replace
+      replace: opts.replace,
+      schedule
     });
   }
   resolveLocator(spec, opts = {}) {
@@ -242,14 +426,15 @@ var ActionService = class {
     });
   }
   async scroll(opts) {
-    const rng = createRng();
-    const steps = Math.max(3, Math.round(Math.abs(opts.dy) / rng.range(80, 140)));
+    this.persona.tick();
+    const steps = Math.max(3, Math.round(Math.abs(opts.dy) / this.persona.rng.range(80, 140)));
     await this.driver.scroll({
       dx: opts.dx ?? 0,
       dy: opts.dy,
       steps,
       mode: mode(opts.stealth)
     });
+    await sleep(this.persona.readPauseMs(Math.min(Math.abs(opts.dy) / 3, 300)));
   }
   async navigate(url) {
     this.snapshot = null;
@@ -259,7 +444,8 @@ var ActionService = class {
   getUrl() {
     return this.driver.getUrl();
   }
-  waitFor(opts) {
+  async waitFor(opts) {
+    await this.idleDrift();
     return this.driver.waitFor({
       ref: opts.ref,
       text: opts.text,
@@ -283,8 +469,9 @@ var ActionService = class {
     if (need) await this.readPage();
     const start = await this.resolveTarget(from);
     const end = await this.resolveTarget(to);
-    const rng = createRng();
-    const samples = generateMove(start.point, end.point, { targetWidth: end.width, rng });
+    this.persona.tick();
+    await this.think(distance(start.point, end.point));
+    const samples = generateMove(start.point, end.point, this.moveParams(end.width));
     await this.driver.drag({
       samples,
       target: end.point,
@@ -295,11 +482,14 @@ var ActionService = class {
   /** Identification: rank on-screen elements by how well their text/name matches a query. */
   async find(text, opts = {}) {
     const snap = await this.readPage(200, true);
+    await sleep(this.persona.readPauseMs(Math.min((snap.text ?? "").length, 400)));
     return rankByText(snap.elements, text).slice(0, opts.maxResults ?? 8);
   }
   /** Identification + interaction: find the best text match, then human-click it (re-reading if needed). */
   async clickText(text, opts = {}) {
-    let matches = rankByText((await this.readPage(200, true)).elements, text);
+    const scan = await this.readPage(200, true);
+    await sleep(this.persona.readPauseMs(Math.min((scan.text ?? "").length, 400)));
+    let matches = rankByText(scan.elements, text);
     for (let attempt = 0; attempt < 2 && matches.length === 0; attempt++) {
       await sleep(400);
       matches = rankByText((await this.readPage(200, true)).elements, text);
@@ -333,9 +523,10 @@ var ActionService = class {
     }
   }
   async resolveTarget(opts) {
+    const precision = this.persona.traits().precision;
     if (opts.rect) {
       const width2 = Math.max(Math.min(opts.rect.width, opts.rect.height), 8);
-      return { point: offCenterPoint(opts.rect, createRng()), width: width2 };
+      return { point: offCenterPoint(opts.rect, this.persona.rng, precision), width: width2 };
     }
     if (typeof opts.x === "number" && typeof opts.y === "number") {
       return { point: { x: opts.x, y: opts.y }, width: 24 };
@@ -345,7 +536,35 @@ var ActionService = class {
     }
     const el = await this.findElement(opts.ref);
     const width = Math.max(Math.min(el.rect.width, el.rect.height), 8);
-    return { point: offCenterPoint(el.rect, createRng()), width };
+    return { point: offCenterPoint(el.rect, this.persona.rng, precision), width };
+  }
+  /** Persona-shaped options for the path engine (one coherent motor signature). */
+  moveParams(targetWidth) {
+    const t = this.persona.traits();
+    return {
+      rng: this.persona.rng,
+      targetWidth,
+      speedFactor: t.speedFactor,
+      curviness: t.curviness,
+      jitterPx: t.jitterPx,
+      overshootProb: t.overshootProb,
+      overshootMag: t.overshootMag,
+      handedness: t.handedness
+    };
+  }
+  /** Cognitive delay before an action. */
+  think(distancePx) {
+    return sleep(this.persona.thinkTimeMs(distancePx));
+  }
+  /** A small settle move while waiting, the way a hand never sits perfectly still. */
+  async idleDrift() {
+    if (!this.lastPos || !this.persona.rng.bool(0.4)) return;
+    const to = {
+      x: this.lastPos.x + this.persona.rng.gaussian(0, 2.5),
+      y: this.lastPos.y + this.persona.rng.gaussian(0, 2.5)
+    };
+    await this.driver.move(generateMove(this.lastPos, to, this.moveParams(6)), "content");
+    this.lastPos = to;
   }
   async findElement(ref) {
     let el = this.snapshot?.elements.find((e) => e.ref === ref);
@@ -595,6 +814,13 @@ var OsCursorDriver = class {
   async type(args) {
     const nut = await this.ensureNut();
     nut.keyboard.config.autoDelayMs = 0;
+    if (args.schedule?.length) {
+      for (const k of scheduleToKeystrokes(args.schedule)) {
+        await nut.keyboard.type(k.ch);
+        await sleep(Math.max(0, k.delayMs));
+      }
+      return;
+    }
     for (const ch of args.text) {
       await nut.keyboard.type(ch);
       await sleep(rand(args.perKeyMinMs, args.perKeyMaxMs));
@@ -863,7 +1089,7 @@ var AgentCursor = class _AgentCursor {
     const port = options.port ?? DEFAULT_WS_PORT;
     const transport = new ExtensionTransport(port);
     await waitForConnection(transport, port, options.timeoutMs ?? 15e3);
-    const action = new ActionService(makeDriver(transport));
+    const action = new ActionService(makeDriver(transport), createPersona(options.seed));
     return new _AgentCursor(action, transport, { stealth: options.stealth ?? false });
   }
   /** Escape hatch to the lower-level action service (move_to by coords, find, clickText, etc.). */
@@ -942,10 +1168,15 @@ export {
   ExtensionTransport,
   Locator,
   OsCursorDriver,
+  Persona,
+  buildTypingSchedule,
+  createPersona,
   createRng,
+  flattenSchedule,
   generateMove,
   offCenterPoint,
   sampleDwellMs,
   sampleKeyDelayMs,
-  samplePressMs
+  samplePressMs,
+  scheduleToKeystrokes
 };

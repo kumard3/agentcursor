@@ -1,16 +1,18 @@
 import { clamp, smootherstep } from "./geometry";
 import type { Rng } from "./rng";
 
-/** Fitts's law (Shannon form): duration grows with the index of difficulty. */
+/** Fitts's law (Shannon form): duration grows with the index of difficulty.
+ * `speedFactor` > 1 is a faster hand, < 1 slower (persona trait; default 1). */
 export function fittsDurationMs(
   dist: number,
   targetWidth: number,
   rng: Rng,
+  speedFactor = 1,
 ): number {
   const a = rng.range(70, 130);
   const b = rng.range(80, 150);
   const id = Math.log2(dist / Math.max(targetWidth, 6) + 1);
-  return Math.max(90, a + b * id);
+  return Math.max(90, (a + b * id) / speedFactor);
 }
 
 export function stepCount(durationMs: number, rng: Rng): number {
