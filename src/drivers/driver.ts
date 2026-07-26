@@ -1,6 +1,9 @@
 import type {
   CursorSample,
   DeliveryMode,
+  KeyOp,
+  LocatorMatch,
+  LocatorSpec,
   MouseButton,
   PageSnapshot,
   Point,
@@ -23,6 +26,9 @@ export interface TypeArgs {
   perKeyMinMs: number;
   perKeyMaxMs: number;
   mode: DeliveryMode;
+  replace?: boolean;
+  /** persona keystroke schedule; content/OS drivers render it, stealth ignores it */
+  schedule?: KeyOp[];
 }
 
 export interface ScrollArgs {
@@ -59,4 +65,5 @@ export interface BrowserDriver {
   ensureVisible(ref?: string, point?: Point): Promise<Rect | null>;
   drag(args: { samples: CursorSample[]; target: Point; button: MouseButton; mode: DeliveryMode }): Promise<void>;
   pressKey(key: string, mode: DeliveryMode): Promise<void>;
+  resolveLocator(spec: LocatorSpec, opts: { timeoutMs: number; scrollIntoView?: boolean }): Promise<LocatorMatch>;
 }

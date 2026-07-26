@@ -1,19 +1,29 @@
-import type { MouseButton, PageElement, PageSnapshot, Point } from "../protocol";
+import type {
+  LocatorMatch,
+  LocatorSpec,
+  MouseButton,
+  PageElement,
+  PageSnapshot,
+  Point,
+  Rect,
+} from "../protocol";
 import type { BrowserDriver } from "../drivers/driver";
 import {
-  createRng,
   generateMove,
   offCenterPoint,
   sampleDwellMs,
-  sampleKeyDelayMs,
   samplePressMs,
+  type MoveOptions,
 } from "../path-engine";
+import { distance } from "../path-engine/geometry";
+import { createPersona, type Persona, type PersonaInfo } from "../persona";
 import { sleep } from "../util/timing";
 
 interface TargetOpts {
   ref?: string;
   x?: number;
   y?: number;
+  rect?: Rect;
 }
 
 interface ResolvedTarget {
@@ -29,8 +39,16 @@ interface ResolvedTarget {
 export class ActionService {
   private snapshot: PageSnapshot | null = null;
   private lastPos: Point | null = null;
+  private readonly persona: Persona;
 
-  constructor(private readonly driver: BrowserDriver) {}
+  constructor(private readonly driver: BrowserDriver, persona?: Persona) {
+    this.persona = persona ?? createPersona();
+  }
+
+  /** The active session persona (seed + traits), for status/inspection. */
+  personaInfo(): PersonaInfo {
+    return this.persona.info();
+  }
 
   async readPage(maxElements = 200, includeText = true): Promise<PageSnapshot> {
     this.snapshot = await this.driver.snapshot(maxElements, includeText);
@@ -41,7 +59,9 @@ export class ActionService {
     await this.ensureFresh(opts.ref);
     const from = await this.ensureStart();
     const { point, width } = await this.resolveTarget(opts);
-    const samples = generateMove(from, point, { targetWidth: width });
+    this.persona.tick();
+    await this.think(distance(from, point));
+    const samples = generateMove(from, point, this.moveParams(width));
     await this.driver.move(samples, mode(opts.stealth));
     this.lastPos = point;
     return point;
@@ -57,15 +77,17 @@ export class ActionService {
     await this.ensureFresh(opts.ref);
     const from = await this.ensureStart();
     const { point, width } = await this.resolveTarget(opts);
-    const rng = createRng();
-    const samples = generateMove(from, point, { targetWidth: width, rng });
+    this.persona.tick();
+    await this.think(distance(from, point));
+    const t = this.persona.traits();
+    const samples = generateMove(from, point, this.moveParams(width));
     await this.driver.click({
       samples,
       target: point,
       button: opts.button ?? "left",
       dblclick: opts.double ?? false,
-      preClickDwellMs: sampleDwellMs(rng),
-      pressMs: samplePressMs(rng),
+      preClickDwellMs: sampleDwellMs(this.persona.rng, t.dwellScale),
+      pressMs: samplePressMs(this.persona.rng, t.pressScale),
       mode: mode(opts.stealth),
     });
     this.lastPos = point;
@@ -75,16 +97,35 @@ export class ActionService {
   async type(opts: {
     text: string;
     ref?: string;
+    rect?: Rect;
+    replace?: boolean;
     stealth?: boolean;
   }): Promise<void> {
     if (opts.ref) await this.click({ ref: opts.ref, stealth: opts.stealth });
-    const delay = sampleKeyDelayMs(createRng());
+    else if (opts.rect) await this.click({ rect: opts.rect, stealth: opts.stealth });
+    this.persona.tick();
+    const base = 12000 / this.persona.traits().wpm;
+    // `replace` keeps the whole-string insert path (and skips typos) so controlled
+    // editors like Draft.js stay correct; otherwise send the persona schedule.
+    const schedule = opts.replace ? undefined : this.persona.keySchedule(opts.text);
     await this.driver.type({
       text: opts.text,
       ref: opts.ref,
-      perKeyMinMs: delay.min,
-      perKeyMaxMs: delay.max,
+      perKeyMinMs: Math.round(base * 0.6),
+      perKeyMaxMs: Math.round(base * 1.8),
       mode: mode(opts.stealth),
+      replace: opts.replace,
+      schedule,
+    });
+  }
+
+  resolveLocator(
+    spec: LocatorSpec,
+    opts: { timeoutMs?: number; scrollIntoView?: boolean } = {},
+  ): Promise<LocatorMatch> {
+    return this.driver.resolveLocator(spec, {
+      timeoutMs: opts.timeoutMs ?? 5_000,
+      scrollIntoView: opts.scrollIntoView,
     });
   }
 
@@ -93,14 +134,16 @@ export class ActionService {
     dx?: number;
     stealth?: boolean;
   }): Promise<void> {
-    const rng = createRng();
-    const steps = Math.max(3, Math.round(Math.abs(opts.dy) / rng.range(80, 140)));
+    this.persona.tick();
+    const steps = Math.max(3, Math.round(Math.abs(opts.dy) / this.persona.rng.range(80, 140)));
     await this.driver.scroll({
       dx: opts.dx ?? 0,
       dy: opts.dy,
       steps,
       mode: mode(opts.stealth),
     });
+    // pause to take in the newly revealed content
+    await sleep(this.persona.readPauseMs(Math.min(Math.abs(opts.dy) / 3, 300)));
   }
 
   async navigate(url: string): Promise<void> {
@@ -113,12 +156,13 @@ export class ActionService {
     return this.driver.getUrl();
   }
 
-  waitFor(opts: {
+  async waitFor(opts: {
     ref?: string;
     text?: string;
     timeoutMs?: number;
     condition?: "exists" | "visible" | "text";
   }): Promise<boolean> {
+    await this.idleDrift();
     return this.driver.waitFor({
       ref: opts.ref,
       text: opts.text,
@@ -147,8 +191,9 @@ export class ActionService {
     if (need) await this.readPage();
     const start = await this.resolveTarget(from);
     const end = await this.resolveTarget(to);
-    const rng = createRng();
-    const samples = generateMove(start.point, end.point, { targetWidth: end.width, rng });
+    this.persona.tick();
+    await this.think(distance(start.point, end.point));
+    const samples = generateMove(start.point, end.point, this.moveParams(end.width));
     await this.driver.drag({
       samples,
       target: end.point,
@@ -160,6 +205,7 @@ export class ActionService {
   /** Identification: rank on-screen elements by how well their text/name matches a query. */
   async find(text: string, opts: { maxResults?: number } = {}): Promise<PageElement[]> {
     const snap = await this.readPage(200, true);
+    await sleep(this.persona.readPauseMs(Math.min((snap.text ?? "").length, 400)));
     return rankByText(snap.elements, text).slice(0, opts.maxResults ?? 8);
   }
 
@@ -168,7 +214,9 @@ export class ActionService {
     text: string,
     opts: { stealth?: boolean; nth?: number; button?: MouseButton; double?: boolean } = {},
   ): Promise<{ matched: PageElement; point: Point }> {
-    let matches = rankByText((await this.readPage(200, true)).elements, text);
+    const scan = await this.readPage(200, true);
+    await sleep(this.persona.readPauseMs(Math.min((scan.text ?? "").length, 400)));
+    let matches = rankByText(scan.elements, text);
     for (let attempt = 0; attempt < 2 && matches.length === 0; attempt++) {
       await sleep(400);
       matches = rankByText((await this.readPage(200, true)).elements, text);
@@ -206,6 +254,11 @@ export class ActionService {
   }
 
   private async resolveTarget(opts: TargetOpts): Promise<ResolvedTarget> {
+    const precision = this.persona.traits().precision;
+    if (opts.rect) {
+      const width = Math.max(Math.min(opts.rect.width, opts.rect.height), 8);
+      return { point: offCenterPoint(opts.rect, this.persona.rng, precision), width };
+    }
     if (typeof opts.x === "number" && typeof opts.y === "number") {
       return { point: { x: opts.x, y: opts.y }, width: 24 };
     }
@@ -214,7 +267,38 @@ export class ActionService {
     }
     const el = await this.findElement(opts.ref);
     const width = Math.max(Math.min(el.rect.width, el.rect.height), 8);
-    return { point: offCenterPoint(el.rect, createRng()), width };
+    return { point: offCenterPoint(el.rect, this.persona.rng, precision), width };
+  }
+
+  /** Persona-shaped options for the path engine (one coherent motor signature). */
+  private moveParams(targetWidth: number): MoveOptions {
+    const t = this.persona.traits();
+    return {
+      rng: this.persona.rng,
+      targetWidth,
+      speedFactor: t.speedFactor,
+      curviness: t.curviness,
+      jitterPx: t.jitterPx,
+      overshootProb: t.overshootProb,
+      overshootMag: t.overshootMag,
+      handedness: t.handedness,
+    };
+  }
+
+  /** Cognitive delay before an action. */
+  private think(distancePx: number): Promise<void> {
+    return sleep(this.persona.thinkTimeMs(distancePx));
+  }
+
+  /** A small settle move while waiting, the way a hand never sits perfectly still. */
+  private async idleDrift(): Promise<void> {
+    if (!this.lastPos || !this.persona.rng.bool(0.4)) return;
+    const to = {
+      x: this.lastPos.x + this.persona.rng.gaussian(0, 2.5),
+      y: this.lastPos.y + this.persona.rng.gaussian(0, 2.5),
+    };
+    await this.driver.move(generateMove(this.lastPos, to, this.moveParams(6)), "content");
+    this.lastPos = to;
   }
 
   private async findElement(ref: string): Promise<PageElement> {

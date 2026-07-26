@@ -1,9 +1,5 @@
-#!/usr/bin/env node
-
-// src/index.ts
-import { readFileSync } from "fs";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+// src/sdk/agent-cursor.ts
+import { writeFile } from "fs/promises";
 
 // src/path-engine/geometry.ts
 function distance(a, b) {
@@ -42,14 +38,14 @@ function easeParam(timeFraction, skew) {
 }
 
 // src/path-engine/rng.ts
-function createRng(seed2) {
-  let state = (seed2 ?? Math.floor(Math.random() * 4294967295)) >>> 0;
+function createRng(seed) {
+  let state = (seed ?? Math.floor(Math.random() * 4294967295)) >>> 0;
   const next = () => {
     state = state + 1831565813 >>> 0;
-    let z2 = state;
-    z2 = Math.imul(z2 ^ z2 >>> 15, z2 | 1);
-    z2 ^= z2 + Math.imul(z2 ^ z2 >>> 7, z2 | 61);
-    return ((z2 ^ z2 >>> 14) >>> 0) / 4294967296;
+    let z = state;
+    z = Math.imul(z ^ z >>> 15, z | 1);
+    z ^= z + Math.imul(z ^ z >>> 7, z | 61);
+    return ((z ^ z >>> 14) >>> 0) / 4294967296;
   };
   const range = (min, max) => min + (max - min) * next();
   const int = (min, max) => Math.floor(range(min, max + 1));
@@ -182,6 +178,10 @@ function sampleDwellMs(rng = createRng(), dwellScale = 1) {
 function samplePressMs(rng = createRng(), pressScale = 1) {
   return Math.round(rng.skewed(45, 130, 1.8) * pressScale);
 }
+function sampleKeyDelayMs(rng = createRng()) {
+  const base = rng.range(55, 110);
+  return { min: Math.round(base * 0.6), max: Math.round(base * 1.8) };
+}
 
 // src/persona/typing.ts
 var NEIGHBORS = {
@@ -219,36 +219,44 @@ function wrongChar(ch, rng) {
   const pick = opts[rng.int(0, opts.length - 1)];
   return ch === lower ? pick : pick.toUpperCase();
 }
-function buildTypingSchedule(text2, rng, traits) {
+function buildTypingSchedule(text, rng, traits) {
   const base = 12e3 / traits.wpm;
   const ops = [];
   let first = true;
-  for (let i = 0; i < text2.length; i++) {
-    const ch = text2[i];
-    const prev = text2[i - 1];
-    let delay = Math.max(8, rng.gaussian(base, base * 0.35));
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const prev = text[i - 1];
+    let delay3 = Math.max(8, rng.gaussian(base, base * 0.35));
     if (first) {
-      delay += traits.reactionMs * rng.range(0.6, 1.1);
+      delay3 += traits.reactionMs * rng.range(0.6, 1.1);
       first = false;
     } else if (prev === " ") {
-      delay += base * rng.range(1.5, 3.5);
+      delay3 += base * rng.range(1.5, 3.5);
     } else if (prev && ".?!".includes(prev)) {
-      delay += base * rng.range(3, 6);
+      delay3 += base * rng.range(3, 6);
     } else if (rng.bool(0.06)) {
-      delay += base * rng.range(2, 5);
+      delay3 += base * rng.range(2, 5);
     }
     if (/[a-zA-Z]/.test(ch) && rng.bool(traits.errorRate)) {
       const wrong = wrongChar(ch, rng);
       if (wrong) {
-        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay) });
+        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay3) });
         ops.push({ t: "back", delayMs: Math.round(base * rng.range(2, 5)) });
         ops.push({ t: "key", ch, delayMs: Math.round(base * rng.range(0.8, 1.4)) });
         continue;
       }
     }
-    ops.push({ t: "key", ch, delayMs: Math.round(delay) });
+    ops.push({ t: "key", ch, delayMs: Math.round(delay3) });
   }
   return ops;
+}
+function flattenSchedule(ops) {
+  let out = "";
+  for (const op of ops) {
+    if (op.t === "key") out += op.ch;
+    else out = out.slice(0, -1);
+  }
+  return out;
 }
 function scheduleToKeystrokes(ops) {
   const stack = [];
@@ -310,17 +318,17 @@ var Persona = class {
     const raw = Math.min(chars, 600) * t.readMsPerChar * this.rng.range(0.6, 1.4);
     return Math.round(clamp(raw, 120, 4e3));
   }
-  keySchedule(text2) {
+  keySchedule(text) {
     const t = this.traits();
-    return buildTypingSchedule(text2, this.rng, {
+    return buildTypingSchedule(text, this.rng, {
       wpm: t.wpm,
       errorRate: t.errorRate,
       reactionMs: t.reactionMs
     });
   }
 };
-function createPersona(seed2, opts = {}) {
-  return new Persona({ seed: seed2, ...opts });
+function createPersona(seed, opts = {}) {
+  return new Persona({ seed, ...opts });
 }
 function sampleTraits(rng) {
   return {
@@ -348,9 +356,9 @@ var rand = (min, max) => min + Math.random() * (max - min);
 
 // src/action/service.ts
 var ActionService = class {
-  constructor(driver2, persona2) {
-    this.driver = driver2;
-    this.persona = persona2 ?? createPersona();
+  constructor(driver, persona) {
+    this.driver = driver;
+    this.persona = persona ?? createPersona();
   }
   driver;
   snapshot = null;
@@ -472,23 +480,23 @@ var ActionService = class {
     });
   }
   /** Identification: rank on-screen elements by how well their text/name matches a query. */
-  async find(text2, opts = {}) {
+  async find(text, opts = {}) {
     const snap = await this.readPage(200, true);
     await sleep(this.persona.readPauseMs(Math.min((snap.text ?? "").length, 400)));
-    return rankByText(snap.elements, text2).slice(0, opts.maxResults ?? 8);
+    return rankByText(snap.elements, text).slice(0, opts.maxResults ?? 8);
   }
   /** Identification + interaction: find the best text match, then human-click it (re-reading if needed). */
-  async clickText(text2, opts = {}) {
+  async clickText(text, opts = {}) {
     const scan = await this.readPage(200, true);
     await sleep(this.persona.readPauseMs(Math.min((scan.text ?? "").length, 400)));
-    let matches = rankByText(scan.elements, text2);
+    let matches = rankByText(scan.elements, text);
     for (let attempt = 0; attempt < 2 && matches.length === 0; attempt++) {
       await sleep(400);
-      matches = rankByText((await this.readPage(200, true)).elements, text2);
+      matches = rankByText((await this.readPage(200, true)).elements, text);
     }
     if (matches.length === 0) {
       throw new Error(
-        `No element matching text "${text2}". Call read_page or screenshot to see what's on the page.`
+        `No element matching text "${text}". Call read_page or screenshot to see what's on the page.`
       );
     }
     const matched = matches[Math.min(opts.nth ?? 0, matches.length - 1)];
@@ -863,12 +871,12 @@ var ExtensionTransport = class {
   wss;
   socket = null;
   pending = /* @__PURE__ */ new Map();
-  constructor(port2 = DEFAULT_WS_PORT) {
-    this.wss = new WebSocketServer({ host: "127.0.0.1", port: port2 });
+  constructor(port = DEFAULT_WS_PORT) {
+    this.wss = new WebSocketServer({ host: "127.0.0.1", port });
     this.wss.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
         process.stderr.write(
-          `agentcursor: port ${port2} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
+          `agentcursor: port ${port} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
 `
         );
         process.exit(1);
@@ -925,336 +933,250 @@ var ExtensionTransport = class {
   }
 };
 
-// src/server/tools.ts
-import { z } from "zod";
-function text(body) {
-  return { content: [{ type: "text", text: body }] };
-}
-function registerTools(server2, action2) {
-  server2.registerTool(
-    "read_page",
-    {
-      description: "Read the current page: interactive elements with stable [ref] handles, their roles/names and on-screen rectangles, plus visible text. Call before clicking or typing by ref.",
-      inputSchema: {
-        maxElements: z.number().int().min(1).max(200).optional(),
-        includeText: z.boolean().optional()
-      }
-    },
-    async ({ maxElements, includeText }) => {
-      const snap = await action2.readPage(maxElements ?? 60, includeText ?? true);
-      return text(formatSnapshot(snap));
-    }
-  );
-  server2.registerTool(
-    "find",
-    {
-      description: "Identification: locate on-screen elements by their visible text or accessible name (shadow-DOM aware), the way a human scans a page. Returns ranked matches with [ref], role, and on-screen rect. Use when you don't already have a ref, then click/move_to/hover by [ref] \u2014 or use click_text to do it in one step.",
-      inputSchema: {
-        text: z.string(),
-        maxResults: z.number().int().min(1).max(20).optional()
-      }
-    },
-    async ({ text: query, maxResults }) => {
-      const matches = await action2.find(query, { maxResults });
-      if (!matches.length) return text(`No elements matching "${query}".`);
-      return text(matches.map(formatElement).join("\n"));
-    }
-  );
-  server2.registerTool(
-    "click_text",
-    {
-      description: "Identification + interaction in one step: find the element that best matches the given text/label, then human-move the cursor to it and click. Re-reads the page if the element isn't there yet. `nth` picks a later match, `stealth:true` delivers trusted events, `double` double-clicks.",
-      inputSchema: {
-        text: z.string(),
-        nth: z.number().int().min(0).optional(),
-        double: z.boolean().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async ({ text: query, nth, double, stealth }) => {
-      const { matched, point } = await action2.clickText(query, { nth, double, stealth });
-      return text(
-        `clicked "${matched.name || matched.ref}" [${matched.ref}] at (${point.x.toFixed(0)}, ${point.y.toFixed(0)})`
-      );
-    }
-  );
-  server2.registerTool(
-    "move_to",
-    {
-      description: "Move the cursor to an element ([ref] from read_page) or to absolute viewport x/y along a human-like path. Does not click. stealth:true delivers trusted events via the debugger driver.",
-      inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      const p = await action2.moveTo(args);
-      return text(`moved to (${p.x.toFixed(0)}, ${p.y.toFixed(0)})`);
-    }
-  );
-  server2.registerTool(
-    "click",
-    {
-      description: "Human-like move + click on an element ([ref]) or x/y. Supports button, double-click, and stealth (trusted-event) mode.",
-      inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        button: z.enum(["left", "right", "middle"]).optional(),
-        double: z.boolean().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      const p = await action2.click(args);
-      const where = args.ref ? `'${args.ref}'` : `(${p.x.toFixed(0)}, ${p.y.toFixed(0)})`;
-      return text(`clicked ${where}`);
-    }
-  );
-  server2.registerTool(
-    "type",
-    {
-      description: "Type text with human key timing. If a ref is given, the input is human-clicked to focus first. stealth:true uses the debugger driver.",
-      inputSchema: {
-        text: z.string(),
-        ref: z.string().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.type(args);
-      return text(`typed ${args.text.length} chars`);
-    }
-  );
-  server2.registerTool(
-    "press_key",
-    {
-      description: "Press a single key on the focused element: Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space, or a single character. Use to submit (Enter), dismiss dialogs (Escape), or tab between fields. stealth:true delivers a trusted key event via the debugger driver.",
-      inputSchema: {
-        key: z.string(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async ({ key, stealth }) => {
-      await action2.pressKey(key, stealth);
-      return text(`pressed ${key}`);
-    }
-  );
-  server2.registerTool(
-    "scroll",
-    {
-      description: "Scroll the page by dy (and optional dx) pixels in eased human steps.",
-      inputSchema: {
-        dy: z.number(),
-        dx: z.number().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.scroll(args);
-      return text(`scrolled dy=${args.dy}`);
-    }
-  );
-  server2.registerTool(
-    "navigate",
-    {
-      description: "Navigate the active tab to a URL.",
-      inputSchema: { url: z.string() }
-    },
-    async ({ url }) => {
-      await action2.navigate(url);
-      return text(`navigating to ${url}`);
-    }
-  );
-  server2.registerTool(
-    "get_url",
-    { description: "Return the active tab's current URL.", inputSchema: {} },
-    async () => text(await action2.getUrl())
-  );
-  server2.registerTool(
-    "wait_for",
-    {
-      description: "Wait until an element [ref] appears or some visible text is present (or specific condition), up to timeoutMs (default 10000). Supports condition: 'exists' | 'visible' | 'text'. Use in testing and automation flows for resilience on dynamic sites.",
-      inputSchema: {
-        ref: z.string().optional(),
-        text: z.string().optional(),
-        timeoutMs: z.number().int().optional(),
-        condition: z.enum(["exists", "visible", "text"]).optional()
-      }
-    },
-    async (args) => {
-      const ok = await action2.waitFor(args);
-      return text(ok ? "found" : "timed out");
-    }
-  );
-  server2.registerTool(
-    "screenshot",
-    {
-      description: "Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate. SEE the page, then click(x,y)/move_to(x,y) at coordinates read off the image. This is the vision loop (screenshot -> decide coords -> click -> screenshot) and needs no DOM refs.",
-      inputSchema: {
-        format: z.enum(["png", "jpeg"]).optional()
-      }
-    },
-    async ({ format }) => {
-      const dataUrl = await action2.screenshot(format ?? "png");
-      const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(dataUrl);
-      if (!m) return text(dataUrl);
-      return { content: [{ type: "image", data: m[2], mimeType: m[1] }] };
-    }
-  );
-  server2.registerTool(
-    "hover",
-    {
-      description: "Human-like move the cursor to an element or coordinates and fire hover events (mouseover, mouseenter). Essential for dropdowns, tooltips, navigation menus, and realistic workflow/testing automation.",
-      inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.hover(args);
-      const where = args.ref ? `'${args.ref}'` : args.x != null ? `(${args.x},${args.y})` : "current position";
-      return text(`hovered ${where}`);
-    }
-  );
-  server2.registerTool(
-    "status",
-    {
-      description: "Return current MCP server status, driver in use (extension or os), whether the browser bridge is connected, and the active tab URL if available. Use for health checks in long-running tests, CI workflows, and agent monitoring.",
-      inputSchema: {}
-    },
-    async () => {
-      const url = await action2.getUrl().catch(() => null);
-      const connected = url !== null;
-      const p = action2.personaInfo();
-      const t = p.traits;
-      return text(
-        [
-          `driver: ${process.env.AGENTCURSOR_DRIVER ?? "extension"}`,
-          `bridge_connected: ${connected}`,
-          `active_url: ${url ?? "none (extension not connected or no http tab)"}`,
-          `ws_port: ${process.env.AGENTCURSOR_WS_PORT ?? 8930}`,
-          "protocol_version: 1",
-          `persona_seed: ${p.seed} (set AGENTCURSOR_SEED to reproduce)`,
-          `persona_actions: ${p.actionCount}`,
-          `persona_fatigue: ${p.fatigue.toFixed(3)}`,
-          `persona_traits: speed=${t.speedFactor.toFixed(2)} curviness=${t.curviness.toFixed(2)} jitter=${t.jitterPx.toFixed(2)}px precision=${t.precision.toFixed(2)} wpm=${Math.round(t.wpm)} errorRate=${t.errorRate.toFixed(3)}`
-        ].join("\n")
-      );
-    }
-  );
-  server2.registerTool(
-    "drag",
-    {
-      description: "Perform a human-like drag from one element/ref or coords to another (e.g. for sliders, reordering, canvas drawing). Uses the realistic path engine while holding the mouse button.",
-      inputSchema: {
-        fromRef: z.string().optional(),
-        fromX: z.number().optional(),
-        fromY: z.number().optional(),
-        toRef: z.string().optional(),
-        toX: z.number().optional(),
-        toY: z.number().optional(),
-        button: z.enum(["left", "right", "middle"]).optional(),
-        stealth: z.boolean().optional()
-      }
-    },
-    async (args) => {
-      await action2.drag(
-        { ref: args.fromRef, x: args.fromX, y: args.fromY },
-        { ref: args.toRef, x: args.toX, y: args.toY },
-        args.button ?? "left",
-        args.stealth
-      );
-      return text("dragged");
-    }
-  );
-  server2.registerPrompt(
-    "human-browser-task",
-    {
-      description: "Guide for performing realistic, human-like browser automation tasks using agentcursor tools. Use this for any non-trivial interaction on real websites."
-    },
-    async () => ({
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: `When using agentcursor:
-1. Always call status and read_page first to understand the current page and connection.
-2. Use [ref] from read_page for all clicks, hovers, types.
-3. For complex pages, use screenshot often to ground yourself.
-4. Prefer human-like: move_to or hover before click, use wait_for for dynamic content.
-5. On modern sites (X, Reddit etc), the snapshot now handles shadow DOM.
-6. For stealth on sensitive sites, use stealth:true (but it shows debugger banner).
-7. After navigate or major changes, re-read_page.
-8. Use ensureVisible implicitly via the tools (scrolls targets into view).
-Be patient with SPAs - combine wait_for + read_page loops.`
-          }
-        }
-      ]
-    })
-  );
-}
-function formatSnapshot(snap) {
-  const lines = [
-    `URL: ${snap.url}`,
-    `Title: ${snap.title}`,
-    `Viewport: ${snap.viewport.width}x${snap.viewport.height} (scroll ${snap.viewport.scrollX},${snap.viewport.scrollY}, dpr ${snap.viewport.devicePixelRatio})`,
-    `Elements (${snap.elements.length}):`
-  ];
-  for (const e of snap.elements) {
-    const r = e.rect;
-    const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-    const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
-    const vis = e.visible !== void 0 ? e.visible ? " visible" : " hidden" : "";
-    const vp = e.inViewport !== void 0 ? e.inViewport ? " in-view" : " off-view" : "";
-    lines.push(
-      `  [${e.ref}] ${e.role}${name} <${e.tag}>${val} @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vis}${vp}`
-    );
+// src/sdk/locator.ts
+var delay = (ms) => new Promise((r) => setTimeout(r, ms));
+var Locator = class _Locator {
+  constructor(ctx, spec) {
+    this.ctx = ctx;
+    this.spec = spec;
   }
-  if (snap.text) lines.push("", "Text:", truncate(snap.text, 4e3));
-  return lines.join("\n");
+  ctx;
+  spec;
+  locator(css) {
+    return this.step({ kind: "css", value: css });
+  }
+  getByRole(role, opts = {}) {
+    return this.step({ kind: "role", value: role, name: opts.name, exact: opts.exact });
+  }
+  getByText(text, opts = {}) {
+    return this.step({ kind: "text", value: text, exact: opts.exact });
+  }
+  getByLabel(text, opts = {}) {
+    return this.step({ kind: "label", value: text, exact: opts.exact });
+  }
+  getByPlaceholder(text, opts = {}) {
+    return this.step({ kind: "placeholder", value: text, exact: opts.exact });
+  }
+  getByTestId(id) {
+    return this.step({ kind: "testid", value: id });
+  }
+  filter(opts) {
+    return this.step({ kind: "filter", hasText: opts.hasText });
+  }
+  nth(index) {
+    return this.step({ kind: "nth", index });
+  }
+  first() {
+    return this.nth(0);
+  }
+  last() {
+    return this.nth(-1);
+  }
+  async click(opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.click({
+      rect: m.rect,
+      button: opts.button,
+      double: opts.double,
+      stealth: opts.stealth ?? this.ctx.stealth
+    });
+    return this;
+  }
+  dblclick(opts = {}) {
+    return this.click({ ...opts, double: true });
+  }
+  async hover(opts = {}) {
+    const m = await this.require();
+    const c = center(m.rect);
+    await this.ctx.action.hover({ x: c.x, y: c.y, stealth: opts.stealth ?? this.ctx.stealth });
+    return this;
+  }
+  async type(text, opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.type({ text, rect: m.rect, stealth: opts.stealth ?? this.ctx.stealth });
+    return this;
+  }
+  async fill(text, opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.type({ text, rect: m.rect, replace: true, stealth: opts.stealth ?? this.ctx.stealth });
+    return this;
+  }
+  async press(key, opts = {}) {
+    const m = await this.require();
+    await this.ctx.action.click({ rect: m.rect, stealth: opts.stealth ?? this.ctx.stealth });
+    await this.ctx.action.pressKey(key, opts.stealth ?? this.ctx.stealth);
+    return this;
+  }
+  async dragTo(target, opts = {}) {
+    const from = await this.require();
+    const to = await target.require();
+    await this.ctx.action.drag({ rect: from.rect }, { rect: to.rect }, "left", opts.stealth ?? this.ctx.stealth);
+    return this;
+  }
+  async scrollIntoView() {
+    await this.require();
+    return this;
+  }
+  async boundingBox() {
+    const m = await this.resolve(false);
+    return m.count > 0 ? m.rect : null;
+  }
+  async textContent() {
+    const m = await this.resolve(false);
+    return m.count > 0 ? m.text : null;
+  }
+  async isVisible() {
+    const m = await this.resolve(false);
+    return m.count > 0 && m.visible;
+  }
+  async count() {
+    const m = await this.resolve(false);
+    return m.count;
+  }
+  async waitFor(opts = {}) {
+    const state = opts.state ?? "visible";
+    const deadline = Date.now() + (opts.timeout ?? 1e4);
+    for (; ; ) {
+      const m = await this.resolve(false, 0);
+      if (m.count > 0 && (state === "attached" || m.visible)) return this;
+      if (Date.now() >= deadline) {
+        throw new Error(`agentcursor: waitFor(${state}) timed out for locator [${describe(this.spec)}]`);
+      }
+      await delay(150);
+    }
+  }
+  step(s) {
+    return new _Locator(this.ctx, [...this.spec, s]);
+  }
+  resolve(scrollIntoView, timeoutMs = 5e3) {
+    return this.ctx.action.resolveLocator(this.spec, { timeoutMs, scrollIntoView });
+  }
+  async require() {
+    const m = await this.resolve(true);
+    if (m.count === 0) {
+      throw new Error(`agentcursor: no element matched locator [${describe(this.spec)}]`);
+    }
+    return m;
+  }
+};
+function center(r) {
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 }
-function truncate(s, n) {
-  return s.length > n ? `${s.slice(0, n)}\u2026` : s;
-}
-function formatElement(e) {
-  const r = e.rect;
-  const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-  const vp = e.inViewport === false ? " off-view" : "";
-  return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
+function describe(spec) {
+  return spec.map(
+    (s) => s.kind === "filter" ? `filter(hasText=${s.hasText})` : s.kind === "nth" ? `nth(${s.index})` : `${s.kind}=${s.value}`
+  ).join(" >> ");
 }
 
-// src/index.ts
-var port = Number(process.env.AGENTCURSOR_WS_PORT ?? DEFAULT_WS_PORT);
-var driverKind = (process.env.AGENTCURSOR_DRIVER ?? "extension").toLowerCase();
-var seedEnv = process.env.AGENTCURSOR_SEED;
-var seed = seedEnv && seedEnv.trim() !== "" && Number.isFinite(Number(seedEnv)) ? Number(seedEnv) : void 0;
-var persona = createPersona(seed);
-var wsTransport = new ExtensionTransport(port);
-var driver = driverKind === "os" ? new OsCursorDriver(wsTransport) : new ExtensionDriver(wsTransport);
-var action = new ActionService(driver, persona);
-function readVersion() {
-  try {
-    return JSON.parse(
-      readFileSync(new URL("../package.json", import.meta.url), "utf8")
-    ).version;
-  } catch {
-    return "0.0.0";
+// src/sdk/agent-cursor.ts
+var delay2 = (ms) => new Promise((r) => setTimeout(r, ms));
+var AgentCursor = class _AgentCursor {
+  constructor(action, transport, opts) {
+    this.action = action;
+    this.transport = transport;
+    this.opts = opts;
+  }
+  action;
+  transport;
+  opts;
+  static connect(options = {}) {
+    return _AgentCursor.start(options, (t) => new ExtensionDriver(t));
+  }
+  static os(options = {}) {
+    return _AgentCursor.start(options, (t) => new OsCursorDriver(t));
+  }
+  static async start(options, makeDriver) {
+    const port = options.port ?? DEFAULT_WS_PORT;
+    const transport = new ExtensionTransport(port);
+    await waitForConnection(transport, port, options.timeoutMs ?? 15e3);
+    const action = new ActionService(makeDriver(transport), createPersona(options.seed));
+    return new _AgentCursor(action, transport, { stealth: options.stealth ?? false });
+  }
+  /** Escape hatch to the lower-level action service (move_to by coords, find, clickText, etc.). */
+  get actions() {
+    return this.action;
+  }
+  locator(css) {
+    return this.root().locator(css);
+  }
+  getByRole(role, opts) {
+    return this.root().getByRole(role, opts);
+  }
+  getByText(text, opts) {
+    return this.root().getByText(text, opts);
+  }
+  getByLabel(text, opts) {
+    return this.root().getByLabel(text, opts);
+  }
+  getByPlaceholder(text, opts) {
+    return this.root().getByPlaceholder(text, opts);
+  }
+  getByTestId(id) {
+    return this.root().getByTestId(id);
+  }
+  async navigate(url) {
+    await this.action.navigate(url);
+    return this;
+  }
+  goto(url) {
+    return this.navigate(url);
+  }
+  url() {
+    return this.action.getUrl();
+  }
+  async scroll(opts) {
+    await this.action.scroll({ dy: opts.dy, dx: opts.dx, stealth: opts.stealth ?? this.opts.stealth });
+    return this;
+  }
+  waitForText(text, opts = {}) {
+    return this.action.waitFor({ text, timeoutMs: opts.timeout });
+  }
+  async screenshot(opts = {}) {
+    const data = await this.action.screenshot(opts.format ?? "png");
+    if (opts.path) {
+      const base64 = data.replace(/^data:[^;]+;base64,/, "");
+      await writeFile(opts.path, Buffer.from(base64, "base64"));
+    }
+    return data;
+  }
+  async close() {
+    this.transport.close();
+  }
+  ctx() {
+    return { action: this.action, stealth: this.opts.stealth };
+  }
+  root() {
+    return new Locator(this.ctx(), []);
+  }
+};
+async function waitForConnection(t, port, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (!t.connected) {
+    if (Date.now() >= deadline) {
+      t.close();
+      throw new Error(
+        `agentcursor: no browser connected on ws://127.0.0.1:${port}. Open Chrome with the agentcursor extension loaded, or pass a different { port }.`
+      );
+    }
+    await delay2(150);
   }
 }
-var server = new McpServer({ name: "agentcursor", version: readVersion() });
-registerTools(server, action);
-await server.connect(new StdioServerTransport());
-process.stderr.write(
-  `agentcursor: MCP ready (stdio, ${driverKind} driver); extension WebSocket on ws://127.0.0.1:${port}
-`
-);
-process.stderr.write(
-  `agentcursor: persona seed ${persona.seed} (set AGENTCURSOR_SEED=${persona.seed} to reproduce this person)
-`
-);
+export {
+  ActionService,
+  AgentCursor,
+  ExtensionDriver,
+  ExtensionTransport,
+  Locator,
+  OsCursorDriver,
+  Persona,
+  buildTypingSchedule,
+  createPersona,
+  createRng,
+  flattenSchedule,
+  generateMove,
+  offCenterPoint,
+  sampleDwellMs,
+  sampleKeyDelayMs,
+  samplePressMs,
+  scheduleToKeystrokes
+};

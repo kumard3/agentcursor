@@ -2,12 +2,16 @@ import type {
   Command,
   CommandEnvelope,
   CursorSample,
+  KeyOp,
+  LocatorMatch,
+  LocatorSpec,
   MouseButton,
   PageElement,
   PageSnapshot,
   Point,
 } from "../../src/protocol";
 import { CursorOverlay } from "./cursor-overlay";
+import { evaluateSpec } from "./locator-engine";
 import { rand, sleep, sleepUntil, smooth } from "./timing";
 
 const overlay = new CursorOverlay();
@@ -44,8 +48,10 @@ async function handle(cmd: Command): Promise<unknown> {
       await replayClick(cmd.samples, cmd.target, cmd.button, cmd.dblclick, cmd.preClickDwellMs, cmd.pressMs);
       return null;
     case "type":
-      await typeText(cmd.text, cmd.ref, cmd.perKeyMinMs, cmd.perKeyMaxMs);
+      await typeText(cmd.text, cmd.ref, cmd.perKeyMinMs, cmd.perKeyMaxMs, cmd.replace, cmd.schedule);
       return null;
+    case "resolveLocator":
+      return resolveLocator(cmd.spec, cmd.timeoutMs, cmd.scrollIntoView);
     case "scroll":
       await scrollPage(cmd.dx, cmd.dy, cmd.steps);
       return null;
@@ -141,15 +147,77 @@ async function typeText(
   ref: string | undefined,
   perKeyMinMs: number,
   perKeyMaxMs: number,
+  replace?: boolean,
+  schedule?: KeyOp[],
 ): Promise<void> {
   const el = (ref ? refMap.get(ref) : document.activeElement) as HTMLElement | null;
   if (el && ref) el.focus();
+  if (replace) clearField(el);
+  if (schedule?.length) {
+    // Persona schedule: bursts, boundary pauses, and typo corrections (a wrong
+    // char, then a real Backspace, then the right char) rendered live.
+    for (const op of schedule) {
+      await sleep(Math.max(0, op.delayMs));
+      if (op.t === "key") {
+        dispatchKey(el, "keydown", op.ch);
+        insertChar(el, op.ch);
+        dispatchKey(el, "keyup", op.ch);
+      } else {
+        dispatchKey(el, "keydown", "Backspace");
+        deleteChar(el);
+        dispatchKey(el, "keyup", "Backspace");
+      }
+    }
+    return;
+  }
   for (const ch of text) {
     dispatchKey(el, "keydown", ch);
     insertChar(el, ch);
     dispatchKey(el, "keyup", ch);
     await sleep(rand(perKeyMinMs, perKeyMaxMs));
   }
+}
+
+function clearField(el: HTMLElement | null): void {
+  if (!el) return;
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  } else if (el.isContentEditable) {
+    el.textContent = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+}
+
+let handleCounter = 0;
+
+async function resolveLocator(
+  spec: LocatorSpec,
+  timeoutMs: number,
+  scroll?: boolean,
+): Promise<LocatorMatch> {
+  const deadline = performance.now() + Math.max(0, timeoutMs);
+  let els = evaluateSpec(spec);
+  while (els.length === 0 && performance.now() < deadline) {
+    await sleep(100);
+    els = evaluateSpec(spec);
+  }
+  const first = els[0] as HTMLElement | undefined;
+  if (!first) {
+    return { handle: "", rect: { x: 0, y: 0, width: 0, height: 0 }, count: 0, visible: false, text: "" };
+  }
+  if (scroll && !isFullyInViewport(first) && typeof first.scrollIntoView === "function") {
+    first.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+    await sleep(60);
+  }
+  const r = first.getBoundingClientRect();
+  return {
+    handle: `loc${++handleCounter}`,
+    rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+    count: els.length,
+    visible: isVisible(first),
+    text: (first.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 200),
+  };
 }
 
 async function scrollPage(dx: number, dy: number, steps: number): Promise<void> {
@@ -475,6 +543,18 @@ function insertChar(el: Element | null, ch: string): void {
     el.dispatchEvent(new Event("input", { bubbles: true }));
   } else if (el instanceof HTMLElement && el.isContentEditable) {
     document.execCommand("insertText", false, ch);
+  }
+}
+
+function deleteChar(el: Element | null): void {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const caret = el.selectionEnd ?? el.value.length;
+    if (caret <= 0) return;
+    el.value = el.value.slice(0, caret - 1) + el.value.slice(caret);
+    el.setSelectionRange?.(caret - 1, caret - 1);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  } else if (el instanceof HTMLElement && el.isContentEditable) {
+    document.execCommand("delete", false);
   }
 }
 

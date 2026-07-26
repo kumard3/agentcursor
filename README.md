@@ -19,6 +19,7 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 
 ## Changelog (key updates)
 
+- **0.3.0**: Programmatic SDK — `import { AgentCursor } from "agentcursor"` with a Playwright-shaped locator API (`getByRole`/`getByText`/`getByLabel`/`getByPlaceholder`/`getByTestId`/css + chaining + `filter`/`nth` + `click`/`type`/`fill`/`hover`/`dragTo`/`press`/`scrollIntoView` + `boundingBox`/`isVisible`/`count`/`waitFor`), every action driven by the human cursor. `connect()` and `os()` lifecycles. Library entry split from the MCP bin so importing the package no longer boots a server; built with `tsup` (ships `.d.ts`). Locator resolution uses `@testing-library/dom` in the content script.
 - **0.2.9**: Active-tab resolution no longer requires Chrome to be the OS-focused window — it falls back to the active tab in any window, then any open http(s) tab. Fixes `No active tab found` when an agent drives the browser while you're in your editor/terminal (the normal case).
 - **0.2.8**: Interaction: `press_key` — press Enter / Escape / Tab / arrows / Home / End / etc. on the focused element, content or stealth (trusted CDP key event). Rounds out the Comet-style action set: Navigation, Identification, Interaction.
 - **0.2.7**: Identification tools — `find` (locate elements by visible text / accessible name, shadow-DOM aware) and `click_text` (find the best text match, then human-move + click, content or stealth, with a re-read retry). Target by what the element *says*, not by ref or pixel coords.
@@ -121,17 +122,50 @@ Add to your MCP servers config (exact format depends on the host):
 
 The server exposes the WebSocket bridge on `ws://127.0.0.1:8930` (override with `AGENTCURSOR_WS_PORT`). The extension auto-reconnects.
 
-### 3. Programmatic / Direct "API" use (tests, scripts, your own automation)
+### 3. Programmatic SDK (`import { AgentCursor }`)
 
-The architecture is intentionally layered. You can use AgentCursor without going through the full MCP server:
+Drive the human cursor from your own Node/TS code with a Playwright-shaped locator API — no MCP client needed. Same engine, same stealth; every action moves a real cursor.
 
-- Import the path engine and `ActionService` + a driver for pure Node automation.
-- Or run the MCP server and speak to it from any MCP client library (the smoke test shows exactly how).
-- Future: optional lightweight HTTP API mode for non-MCP consumers.
+```ts
+import { AgentCursor } from "agentcursor";
 
-See `src/action/service.ts`, `src/drivers/*`, and `src/path-engine` for the reusable pieces. The same human movement logic powers both the MCP tools and direct usage.
+// Attach to a running Chrome that has the extension loaded.
+// Pass { stealth: true } for trusted CDP events; use AgentCursor.os() for the nut-js OS cursor.
+const ac = await AgentCursor.connect();
 
-This makes AgentCursor a solid foundation for your internal testing frameworks or agent tool use.
+await ac.navigate("https://example.com");
+await ac.getByRole("button", { name: "Buy now" }).click();
+await ac.getByLabel("Email").fill("a@b.com");
+await ac.getByText("Submit").click();
+await ac.getByLabel("Email").press("Enter");
+
+// chaining + filtering, just like Playwright
+await ac.locator(".row").filter({ hasText: "Pro" }).nth(0).getByText("Edit").click();
+
+if (await ac.getByTestId("checkout").isVisible()) {
+  await ac.getByTestId("checkout").click();
+}
+
+await ac.screenshot({ path: "out.png" });
+await ac.close();
+```
+
+**Lifecycles**
+- `AgentCursor.connect({ port?, stealth?, timeoutMs? })` — attach to a running Chrome with the extension loaded (works with your real, logged-in profile).
+- `AgentCursor.os({ stealth?, ... })` — same locator API, but the real OS cursor is moved via nut-js (genuinely trusted events); page sensing still goes through the extension.
+- `launch()` (spawn Chrome for you) is planned for a later release. Stable Chrome dropped `--load-extension` in v137, so launch will target Chrome for Testing.
+
+**Locators** (lazy, chainable, Playwright-shaped)
+- Find: `locator(css)`, `getByRole(role, { name })`, `getByText`, `getByLabel`, `getByPlaceholder`, `getByTestId`.
+- Refine: `.filter({ hasText })`, `.nth(i)`, `.first()`, `.last()`, and chaining (`a.locator(b)`).
+- Act: `.click()`, `.dblclick()`, `.hover()`, `.type()`, `.fill()`, `.press(key)`, `.dragTo(other)`, `.scrollIntoView()`.
+- Query: `.boundingBox()`, `.textContent()`, `.isVisible()`, `.count()`, `.waitFor({ state })`.
+
+Each action resolves the locator in the page (role/label/etc. via `@testing-library/dom`, css/text via the DOM), then drives the human-path engine to the element. `ac.actions` exposes the lower-level `ActionService` (move by coords, `find`, `clickText`, scroll) as an escape hatch.
+
+A full runnable example is in [`examples/sdk-quickstart.mjs`](examples/sdk-quickstart.mjs); `pnpm smoke:sdk` runs the end-to-end pipeline against a simulated browser.
+
+> Note: in-page (`stealth: false`) events are `isTrusted=false`. Use `stealth: true` (CDP) or `AgentCursor.os()` when you need trusted events.
 
 ## Tools (MCP)
 

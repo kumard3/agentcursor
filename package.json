@@ -1,10 +1,20 @@
 {
   "name": "agentcursor",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "Local free human-like browser automation over MCP. Realistic cursor + interactions for coding agents, E2E testing, QA workflows, and general browser automation on real sites.",
   "type": "module",
   "bin": {
     "agentcursor": "dist/index.js"
+  },
+  "main": "dist/lib.js",
+  "module": "dist/lib.js",
+  "types": "dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -15,14 +25,15 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node build.mjs && node extension/build.mjs",
-    "build:server": "node build.mjs",
+    "build": "tsup && node extension/build.mjs",
+    "build:server": "tsup",
     "build:ext": "node extension/build.mjs",
     "reload": "AGENTCURSOR_BUMP=1 node extension/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node build.mjs && node scripts/smoke.mjs",
+    "smoke": "tsup && node scripts/smoke.mjs",
+    "smoke:sdk": "tsup && node scripts/sdk-smoke.mjs",
     "verify": "node scripts/verify-live.mjs",
     "demo": "node scripts/demo-drive.mjs",
     "dev": "tsx src/index.ts",
@@ -49,10 +60,13 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
     "@types/chrome": "^0.1.43",
     "@types/node": "^25.9.3",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1",
+    "jsdom": "^26.1.0",
+    "tsup": "^8.5.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
