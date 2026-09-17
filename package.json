@@ -1,7 +1,7 @@
 {
   "name": "agentcursor",
-  "version": "0.3.0",
-  "description": "Local free human-like browser automation over MCP. Realistic cursor + interactions for coding agents, E2E testing, QA workflows, and general browser automation on real sites.",
+  "version": "0.4.0",
+  "description": "A visible, human-like cursor for AI agents: drive any Mac app or browser tab over MCP, with text-first reads that save tokens. One setup command connects Claude Code, Cursor, Codex, VS Code, Windsurf, Claude Desktop and Gemini CLI.",
   "type": "module",
   "bin": {
     "agentcursor": "dist/index.js"
@@ -25,7 +25,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup && node extension/build.mjs",
+    "build": "tsup && node scripts/build-native.mjs && node extension/build.mjs",
     "build:server": "tsup",
     "build:ext": "node extension/build.mjs",
     "reload": "AGENTCURSOR_BUMP=1 node extension/build.mjs",
@@ -37,7 +37,8 @@
     "verify": "node scripts/verify-live.mjs",
     "demo": "node scripts/demo-drive.mjs",
     "dev": "tsx src/index.ts",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "build:native": "node scripts/build-native.mjs"
   },
   "keywords": [
     "mcp",
@@ -47,7 +48,10 @@
     "mouse-movement",
     "anti-detection",
     "claude",
-    "agent"
+    "agent",
+    "computer-use",
+    "desktop-automation",
+    "macos-accessibility"
   ],
   "license": "MIT",
   "author": "Kumar Deepanshu",

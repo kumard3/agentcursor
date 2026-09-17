@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentCursor Setup</title>
+<style>
+  :root {
+    --bg: #070707; --panel: #101010; --line: #1f1f1f; --line-strong: #2c2c2c;
+    --text: #f2f2f2; --muted: #8a8a8a; --dim: #555; --ok: #f2f2f2; --warn: #bdbdbd;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", sans-serif;
+    background-image: radial-gradient(1200px 500px at 50% -200px, #1c1c1c 0%, transparent 70%);
+    min-height: 100vh;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand svg { width: 26px; height: 26px; }
+  .brand h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .pill { font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); border: 1px solid var(--line-strong); padding: 6px 10px; border-radius: 6px; }
+  .lead { color: var(--muted); margin: -12px 0 28px; max-width: 560px; }
+  .progress { height: 2px; background: var(--line); border-radius: 2px; overflow: hidden; margin-bottom: 28px; }
+  .progress > div { height: 100%; background: linear-gradient(90deg, #6d6d6d, #fff); transition: width .4s ease; }
+  section { background: linear-gradient(180deg, #121212, var(--panel)); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  section h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  section h2 .n { font: 11px/1 ui-monospace, Menlo, monospace; color: var(--dim); border: 1px solid var(--line-strong); border-radius: 4px; padding: 3px 5px; }
+  section > p { color: var(--muted); margin: 0 0 14px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; }
+  .row .label { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .row .sub { color: var(--dim); font-size: 12px; }
+  .mark { width: 16px; height: 16px; border: 1px solid var(--line-strong); border-radius: 4px; display: inline-grid; place-items: center; flex: none; font-size: 11px; color: var(--bg); }
+  .mark.on { background: var(--ok); border-color: var(--ok); }
+  .mark.on::after { content: "✓"; font-weight: 700; }
+  .state { color: var(--muted); font-size: 12px; }
+  button {
+    font: inherit; font-size: 13px; color: var(--bg); background: var(--text); border: 0; border-radius: 7px;
+    padding: 7px 12px; cursor: pointer; white-space: nowrap; box-shadow: inset 0 1px 0 rgba(255,255,255,.5);
+  }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line-strong); box-shadow: none; }
+  button:disabled { opacity: .45; cursor: default; }
+  button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  code, pre { font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  pre { background: #0a0a0a; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0 0; color: #cfcfcf; white-space: pre-wrap; word-break: break-all; }
+  .prompt { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; color: #d9d9d9; }
+  ol { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+  ol li { margin: 4px 0; }
+  details { margin-top: 12px; color: var(--muted); }
+  summary { cursor: pointer; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #fff; color: #000; padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: calc(100vw - 32px); opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  .hidden { display: none; }
+  @media (max-width: 520px) { .row { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 3l15 7.2-6.4 1.6L9.4 18 4 3z" fill="#fff"/><path d="M13 12.2l5.5 6.3" stroke="#8a8a8a" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <h1>AgentCursor</h1>
+    </div>
+    <span class="pill" id="service">connecting…</span>
+  </header>
+  <p class="lead">A visible, human-like cursor your AI can use in any Mac app and in your browser. Finish the steps below once; every connected AI app shares this local service.</p>
+  <div class="progress" aria-hidden="true"><div id="bar" style="width:0%"></div></div>
+
+  <section>
+    <h2><span class="n">1</span> Connect your AI apps</h2>
+    <p>Adds AgentCursor to each app's MCP settings. Restart or reload the app afterwards.</p>
+    <div id="clients"></div>
+    <div class="actions"><button id="connect-all">Connect all detected</button></div>
+    <details>
+      <summary>Another app? Add it by hand</summary>
+      <pre id="manual"></pre>
+    </details>
+  </section>
+
+  <section id="desktop-section">
+    <h2><span class="n">2</span> Control any Mac app</h2>
+    <p>macOS asks you to allow this once. Grant it to the app your AI runs in (Terminal, Cursor, Claude...), then come back here.</p>
+    <div class="row"><div class="label"><span class="mark" id="ax-mark"></span><div>Accessibility<div class="sub">Read app windows and move the cursor</div></div></div><button class="ghost" id="ax-btn">Allow</button></div>
+    <div class="row"><div class="label"><span class="mark" id="sr-mark"></span><div>Screen Recording<div class="sub">Only for desktop_screenshot</div></div></div><button class="ghost" id="sr-btn">Allow</button></div>
+    <div class="actions"><button id="wiggle">Test the cursor</button></div>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span> Browser tabs <span class="state">optional</span></h2>
+    <p>For web pages, load the Chrome extension once. Desktop control works without it.</p>
+    <div class="row"><div class="label"><span class="mark" id="ext-mark"></span><div>Chrome extension<div class="sub" id="ext-sub"></div></div></div><button class="ghost" id="ext-copy">Copy folder path</button></div>
+    <ol id="ext-steps">
+      <li>Open <code>chrome://extensions</code> and turn on Developer mode.</li>
+      <li>Click Load unpacked and pick the folder path you copied.</li>
+      <li>Open any normal web page. This turns green on its own.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2><span class="n">4</span> Try it</h2>
+    <p>Paste one of these into your AI app.</p>
+    <div id="prompts"></div>
+  </section>
+
+  <details>
+    <summary>Details</summary>
+    <pre id="details"></pre>
+  </details>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  let state = null;
+
+  const PROMPTS = [
+    "Use agentcursor: open Notes, create a new note and write a 3 item shopping list.",
+    "Use agentcursor: open Finder, go to Downloads and tell me the three newest files.",
+    "Use agentcursor: in my browser, open news.ycombinator.com and click the top story.",
+  ];
+
+  function toast(msg) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => t.classList.remove("show"), 4000);
+  }
+
+  async function api(path, body) {
+    const res = await fetch(path, body === undefined ? {} : {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  async function busy(button, fn) {
+    button.disabled = true;
+    try { await fn(); } catch (e) { toast(e.message); } finally { button.disabled = false; refresh(); }
+  }
+
+  async function copy(text, label) {
+    try { await navigator.clipboard.writeText(text); toast(`${label} copied`); } catch { toast(text); }
+  }
+
+  function render(s) {
+    state = s;
+    $("service").textContent = `running · v${s.version}`;
+
+    const detected = s.clients.filter((c) => c.detected);
+    $("clients").innerHTML = s.clients.map((c) => `
+      <div class="row">
+        <div class="label"><span class="mark ${c.configured ? "on" : ""}"></span><div>${esc(c.name)}<div class="sub">${c.configured ? "Connected" : c.detected ? "Installed, not connected" : "Not found on this machine"}</div></div></div>
+        ${c.detected && !c.configured ? `<button class="ghost" data-client="${esc(c.id)}">Connect</button>` : ""}
+      </div>`).join("");
+    $("connect-all").disabled = !detected.some((c) => !c.configured);
+    $("manual").textContent = JSON.stringify({ mcpServers: { agentcursor: s.stdio } }, null, 2) + `\n\nHTTP transport: ${s.mcpUrl}`;
+
+    const d = s.desktop;
+    $("desktop-section").classList.toggle("hidden", !d.supported);
+    $("ax-mark").classList.toggle("on", d.accessibility);
+    $("sr-mark").classList.toggle("on", d.screenRecording);
+    $("ax-btn").classList.toggle("hidden", d.accessibility);
+    $("sr-btn").classList.toggle("hidden", d.screenRecording);
+    $("wiggle").disabled = !d.accessibility;
+
+    $("ext-mark").classList.toggle("on", s.extension.connected);
+    $("ext-sub").textContent = s.extension.connected ? "Connected" : s.extension.path;
+    $("ext-steps").classList.toggle("hidden", s.extension.connected);
+
+    const steps = [detected.some((c) => c.configured), !d.supported || d.accessibility, !d.supported || d.screenRecording, s.extension.connected];
+    $("bar").style.width = `${Math.round((steps.filter(Boolean).length / steps.length) * 100)}%`;
+
+    $("details").textContent = [
+      `MCP (HTTP): ${s.mcpUrl}`,
+      `MCP (stdio): ${s.stdio.command} ${s.stdio.args.join(" ")}`,
+      `Extension WebSocket: ws://127.0.0.1:${s.extension.wsPort}`,
+      `Persona seed: ${s.personaSeed}`,
+      `Service pid: ${s.pid}`,
+      `Log: ${s.logFile}`,
+    ].join("\n");
+  }
+
+  async function refresh() {
+    try { render(await api("/api/status")); }
+    catch { $("service").textContent = "service not running: run agentcursor setup"; }
+  }
+
+  $("clients").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-client]");
+    if (b) busy(b, async () => toast((await api("/api/connect", { client: b.dataset.client })).message));
+  });
+  $("connect-all").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    const pending = state.clients.filter((c) => c.detected && !c.configured);
+    const results = [];
+    for (const c of pending) {
+      try { await api("/api/connect", { client: c.id }); results.push(`${c.name} connected`); }
+      catch (err) { results.push(`${c.name}: ${err.message}`); }
+    }
+    toast(results.join(" · "));
+  }));
+  $("ax-btn").addEventListener("click", (e) => busy(e.currentTarget, () => api("/api/permission", { kind: "accessibility" })));
+  $("sr-btn").addEventListener("click", (e) => busy(e.currentTarget, () => api("/api/permission", { kind: "screen" })));
+  $("wiggle").addEventListener("click", (e) => busy(e.currentTarget, async () => { await api("/api/test-cursor", {}); toast("That was AgentCursor moving your cursor"); }));
+  $("ext-copy").addEventListener("click", () => state && copy(state.extension.path, "Extension folder path"));
+
+  $("prompts").innerHTML = PROMPTS.map((p, i) => `<div class="prompt"><span>${esc(p)}</span><button class="ghost" data-prompt="${i}">Copy</button></div>`).join("");
+  $("prompts").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-prompt]");
+    if (b) copy(PROMPTS[Number(b.dataset.prompt)], "Prompt");
+  });
+
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>

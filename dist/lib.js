@@ -318,6 +318,19 @@ var Persona = class {
     const raw = Math.min(chars, 600) * t.readMsPerChar * this.rng.range(0.6, 1.4);
     return Math.round(clamp(raw, 120, 4e3));
   }
+  moveOptions(targetWidth) {
+    const t = this.traits();
+    return {
+      rng: this.rng,
+      targetWidth,
+      speedFactor: t.speedFactor,
+      curviness: t.curviness,
+      jitterPx: t.jitterPx,
+      overshootProb: t.overshootProb,
+      overshootMag: t.overshootMag,
+      handedness: t.handedness
+    };
+  }
   keySchedule(text) {
     const t = this.traits();
     return buildTypingSchedule(text, this.rng, {
@@ -378,7 +391,7 @@ var ActionService = class {
     const { point, width } = await this.resolveTarget(opts);
     this.persona.tick();
     await this.think(distance(from, point));
-    const samples = generateMove(from, point, this.moveParams(width));
+    const samples = generateMove(from, point, this.persona.moveOptions(width));
     await this.driver.move(samples, mode(opts.stealth));
     this.lastPos = point;
     return point;
@@ -390,7 +403,7 @@ var ActionService = class {
     this.persona.tick();
     await this.think(distance(from, point));
     const t = this.persona.traits();
-    const samples = generateMove(from, point, this.moveParams(width));
+    const samples = generateMove(from, point, this.persona.moveOptions(width));
     await this.driver.click({
       samples,
       target: point,
@@ -471,7 +484,7 @@ var ActionService = class {
     const end = await this.resolveTarget(to);
     this.persona.tick();
     await this.think(distance(start.point, end.point));
-    const samples = generateMove(start.point, end.point, this.moveParams(end.width));
+    const samples = generateMove(start.point, end.point, this.persona.moveOptions(end.width));
     await this.driver.drag({
       samples,
       target: end.point,
@@ -538,20 +551,6 @@ var ActionService = class {
     const width = Math.max(Math.min(el.rect.width, el.rect.height), 8);
     return { point: offCenterPoint(el.rect, this.persona.rng, precision), width };
   }
-  /** Persona-shaped options for the path engine (one coherent motor signature). */
-  moveParams(targetWidth) {
-    const t = this.persona.traits();
-    return {
-      rng: this.persona.rng,
-      targetWidth,
-      speedFactor: t.speedFactor,
-      curviness: t.curviness,
-      jitterPx: t.jitterPx,
-      overshootProb: t.overshootProb,
-      overshootMag: t.overshootMag,
-      handedness: t.handedness
-    };
-  }
   /** Cognitive delay before an action. */
   think(distancePx) {
     return sleep(this.persona.thinkTimeMs(distancePx));
@@ -563,7 +562,7 @@ var ActionService = class {
       x: this.lastPos.x + this.persona.rng.gaussian(0, 2.5),
       y: this.lastPos.y + this.persona.rng.gaussian(0, 2.5)
     };
-    await this.driver.move(generateMove(this.lastPos, to, this.moveParams(6)), "content");
+    await this.driver.move(generateMove(this.lastPos, to, this.persona.moveOptions(6)), "content");
     this.lastPos = to;
   }
   async findElement(ref) {
@@ -702,23 +701,77 @@ function screenToViewport(p, g) {
   return { x: p.x - g.screenX - left, y: p.y - g.screenY - top };
 }
 
-// src/drivers/os-cursor-driver.ts
-async function loadNut() {
-  const spec = "@nut-tree-fork/nut-js";
-  try {
-    return await import(spec);
-  } catch {
-    throw new Error(
-      "The OS-cursor driver needs @nut-tree-fork/nut-js. Install it with: pnpm add @nut-tree-fork/nut-js"
-    );
+// src/drivers/nut.ts
+var loaded = null;
+function loadNut() {
+  loaded ??= (async () => {
+    const spec = "@nut-tree-fork/nut-js";
+    try {
+      const nut = await import(spec);
+      nut.mouse.config.autoDelayMs = 0;
+      nut.keyboard.config.autoDelayMs = 0;
+      return nut;
+    } catch {
+      loaded = null;
+      throw new Error(
+        "OS cursor control needs @nut-tree-fork/nut-js. Install it with: pnpm add @nut-tree-fork/nut-js"
+      );
+    }
+  })();
+  return loaded;
+}
+function nutButton(nut, button) {
+  if (button === "right") return nut.Button.RIGHT;
+  if (button === "middle") return nut.Button.MIDDLE;
+  return nut.Button.LEFT;
+}
+async function playPath(nut, samples, toScreen = (p) => p) {
+  const start = performance.now();
+  for (const s of samples) {
+    await sleepUntil(start + s.t);
+    const p = toScreen(s);
+    await nut.mouse.setPosition(new nut.Point(p.x, p.y));
   }
 }
+async function pressButton(nut, button, pressMs, double = false) {
+  const b = nutButton(nut, button);
+  for (let i = 0; i < (double ? 2 : 1); i++) {
+    if (i) await sleep(40);
+    await nut.mouse.pressButton(b);
+    await sleep(pressMs);
+    await nut.mouse.releaseButton(b);
+  }
+}
+async function typeText(nut, text, opts) {
+  if (opts.schedule?.length) {
+    for (const k of scheduleToKeystrokes(opts.schedule)) {
+      await nut.keyboard.type(k.ch);
+      await sleep(Math.max(0, k.delayMs));
+    }
+    return;
+  }
+  for (const ch of text) {
+    await nut.keyboard.type(ch);
+    await sleep(rand(opts.perKeyMinMs, opts.perKeyMaxMs));
+  }
+}
+async function scrollSteps(nut, dx, dy, steps) {
+  const n = Math.max(1, steps);
+  for (let i = 0; i < n; i++) {
+    const v = dy ? Math.max(1, Math.round(Math.abs(dy / n))) : 0;
+    const h = dx ? Math.max(1, Math.round(Math.abs(dx / n))) : 0;
+    if (v) await (dy >= 0 ? nut.mouse.scrollDown(v) : nut.mouse.scrollUp(v));
+    if (h) await (dx >= 0 ? nut.mouse.scrollRight(h) : nut.mouse.scrollLeft(h));
+    await sleep(rand(12, 28));
+  }
+}
+
+// src/drivers/os-cursor-driver.ts
 var OsCursorDriver = class {
   constructor(transport) {
     this.transport = transport;
   }
   transport;
-  nut = null;
   geom = null;
   async snapshot(maxElements, includeText) {
     return await this.transport.send({
@@ -757,7 +810,7 @@ var OsCursorDriver = class {
     });
   }
   async drag(args) {
-    const nut = await this.ensureNut();
+    const nut = await loadNut();
     const g = await this.geometry();
     const first = args.samples[0];
     if (!first) return;
@@ -782,67 +835,24 @@ var OsCursorDriver = class {
     );
   }
   async cursorState() {
-    const nut = await this.ensureNut();
+    const nut = await loadNut();
     const pos = await nut.mouse.getPosition();
     return screenToViewport(pos, await this.geometry());
   }
   async move(samples, _mode) {
-    const nut = await this.ensureNut();
     const g = await this.geometry();
-    const start = performance.now();
-    for (const s of samples) {
-      await sleepUntil(start + s.t);
-      const screen = viewportToScreen(s, g);
-      await nut.mouse.setPosition(new nut.Point(screen.x, screen.y));
-    }
+    await playPath(await loadNut(), samples, (p) => viewportToScreen(p, g));
   }
   async click(args) {
-    const nut = await this.ensureNut();
     await this.move(args.samples, args.mode);
     await sleep(args.preClickDwellMs);
-    const button = nutButton(nut, args.button);
-    await nut.mouse.pressButton(button);
-    await sleep(args.pressMs);
-    await nut.mouse.releaseButton(button);
-    if (args.dblclick) {
-      await sleep(40);
-      await nut.mouse.pressButton(button);
-      await sleep(args.pressMs);
-      await nut.mouse.releaseButton(button);
-    }
+    await pressButton(await loadNut(), args.button, args.pressMs, args.dblclick);
   }
   async type(args) {
-    const nut = await this.ensureNut();
-    nut.keyboard.config.autoDelayMs = 0;
-    if (args.schedule?.length) {
-      for (const k of scheduleToKeystrokes(args.schedule)) {
-        await nut.keyboard.type(k.ch);
-        await sleep(Math.max(0, k.delayMs));
-      }
-      return;
-    }
-    for (const ch of args.text) {
-      await nut.keyboard.type(ch);
-      await sleep(rand(args.perKeyMinMs, args.perKeyMaxMs));
-    }
+    await typeText(await loadNut(), args.text, args);
   }
   async scroll(args) {
-    const nut = await this.ensureNut();
-    const steps = Math.max(1, args.steps);
-    const perStep = args.dy / steps;
-    for (let i = 0; i < steps; i++) {
-      const amount = Math.max(1, Math.round(Math.abs(perStep)));
-      if (perStep >= 0) await nut.mouse.scrollDown(amount);
-      else await nut.mouse.scrollUp(amount);
-      await sleep(rand(12, 28));
-    }
-  }
-  async ensureNut() {
-    if (!this.nut) {
-      this.nut = await loadNut();
-      this.nut.mouse.config.autoDelayMs = 0;
-    }
-    return this.nut;
+    await scrollSteps(await loadNut(), 0, args.dy, args.steps);
   }
   async geometry() {
     if (!this.geom) {
@@ -853,11 +863,6 @@ var OsCursorDriver = class {
     return this.geom;
   }
 };
-function nutButton(nut, button) {
-  if (button === "right") return nut.Button.RIGHT;
-  if (button === "middle") return nut.Button.MIDDLE;
-  return nut.Button.LEFT;
-}
 
 // src/protocol/index.ts
 var DEFAULT_WS_PORT = 8930;
@@ -884,7 +889,12 @@ var ExtensionTransport = class {
       process.stderr.write(`agentcursor: WebSocket server error: ${err.message}
 `);
     });
-    this.wss.on("connection", (ws) => {
+    this.wss.on("connection", (ws, req) => {
+      const origin = req.headers.origin;
+      if (origin && !origin.startsWith("chrome-extension://")) {
+        ws.close(1008, "origin not allowed");
+        return;
+      }
       this.socket = ws;
       ws.on("message", (data) => this.onMessage(data.toString()));
       ws.on("close", () => {

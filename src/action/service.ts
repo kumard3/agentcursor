@@ -13,7 +13,6 @@ import {
   offCenterPoint,
   sampleDwellMs,
   samplePressMs,
-  type MoveOptions,
 } from "../path-engine";
 import { distance } from "../path-engine/geometry";
 import { createPersona, type Persona, type PersonaInfo } from "../persona";
@@ -61,7 +60,7 @@ export class ActionService {
     const { point, width } = await this.resolveTarget(opts);
     this.persona.tick();
     await this.think(distance(from, point));
-    const samples = generateMove(from, point, this.moveParams(width));
+    const samples = generateMove(from, point, this.persona.moveOptions(width));
     await this.driver.move(samples, mode(opts.stealth));
     this.lastPos = point;
     return point;
@@ -80,7 +79,7 @@ export class ActionService {
     this.persona.tick();
     await this.think(distance(from, point));
     const t = this.persona.traits();
-    const samples = generateMove(from, point, this.moveParams(width));
+    const samples = generateMove(from, point, this.persona.moveOptions(width));
     await this.driver.click({
       samples,
       target: point,
@@ -193,7 +192,7 @@ export class ActionService {
     const end = await this.resolveTarget(to);
     this.persona.tick();
     await this.think(distance(start.point, end.point));
-    const samples = generateMove(start.point, end.point, this.moveParams(end.width));
+    const samples = generateMove(start.point, end.point, this.persona.moveOptions(end.width));
     await this.driver.drag({
       samples,
       target: end.point,
@@ -270,21 +269,6 @@ export class ActionService {
     return { point: offCenterPoint(el.rect, this.persona.rng, precision), width };
   }
 
-  /** Persona-shaped options for the path engine (one coherent motor signature). */
-  private moveParams(targetWidth: number): MoveOptions {
-    const t = this.persona.traits();
-    return {
-      rng: this.persona.rng,
-      targetWidth,
-      speedFactor: t.speedFactor,
-      curviness: t.curviness,
-      jitterPx: t.jitterPx,
-      overshootProb: t.overshootProb,
-      overshootMag: t.overshootMag,
-      handedness: t.handedness,
-    };
-  }
-
   /** Cognitive delay before an action. */
   private think(distancePx: number): Promise<void> {
     return sleep(this.persona.thinkTimeMs(distancePx));
@@ -297,7 +281,7 @@ export class ActionService {
       x: this.lastPos.x + this.persona.rng.gaussian(0, 2.5),
       y: this.lastPos.y + this.persona.rng.gaussian(0, 2.5),
     };
-    await this.driver.move(generateMove(this.lastPos, to, this.moveParams(6)), "content");
+    await this.driver.move(generateMove(this.lastPos, to, this.persona.moveOptions(6)), "content");
     this.lastPos = to;
   }
 
@@ -326,10 +310,10 @@ function mode(stealth?: boolean): "content" | "debugger" {
 }
 
 /** Rank elements by how well their accessible name / value matches a text query. */
-function rankByText(elements: PageElement[], query: string): PageElement[] {
+export function rankByText<T extends Pick<PageElement, "name" | "value" | "visible" | "inViewport">>(elements: T[], query: string): T[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const scored: Array<{ el: PageElement; score: number }> = [];
+  const scored: Array<{ el: T; score: number }> = [];
   for (const el of elements) {
     const name = (el.name ?? "").toLowerCase();
     const val = (el.value ?? "").toLowerCase();

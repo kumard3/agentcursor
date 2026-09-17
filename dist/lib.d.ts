@@ -257,6 +257,36 @@ interface Rng {
  */
 declare function createRng(seed?: number): Rng;
 
+interface MoveOptions {
+    rng?: Rng;
+    /** approximate target size, feeds Fitts duration; default 24 */
+    targetWidth?: number;
+    /** allow overshoot-and-correct on long moves; default true */
+    overshoot?: boolean;
+    /** persona: move-duration divisor; default 1 */
+    speedFactor?: number;
+    /** persona: Bézier bow scale; default 1 */
+    curviness?: number;
+    /** persona: Gaussian jitter amplitude in px; default 1.4 */
+    jitterPx?: number;
+    /** persona: overshoot chance on a long move; default 0.5 */
+    overshootProb?: number;
+    /** persona: overshoot distance as fraction of travel; default 0.12 */
+    overshootMag?: number;
+    /** persona: -1/+1 curvature side bias; 0 = unbiased (default) */
+    handedness?: number;
+}
+declare function generateMove(from: Point, to: Point, options?: MoveOptions): CursorSample[];
+/** A point inside the rect, offset from dead-center (humans miss the middle).
+ * `precision` is the spread as a fraction of the target; smaller = tighter. */
+declare function offCenterPoint(rect: Rect, rng?: Rng, precision?: number): Point;
+declare function sampleDwellMs(rng?: Rng, dwellScale?: number): number;
+declare function samplePressMs(rng?: Rng, pressScale?: number): number;
+declare function sampleKeyDelayMs(rng?: Rng): {
+    min: number;
+    max: number;
+};
+
 /**
  * One person's stable motor + typing signature. Sampled once from the seed;
  * every action reads these so a whole session reads as the same person.
@@ -321,6 +351,7 @@ declare class Persona {
     thinkTimeMs(distancePx?: number): number;
     /** Pause to "read" `chars` of freshly surfaced text, capped. */
     readPauseMs(chars: number): number;
+    moveOptions(targetWidth: number): MoveOptions;
     keySchedule(text: string): KeyOp[];
 }
 declare function createPersona(seed?: number, opts?: Omit<PersonaOptions, "seed">): Persona;
@@ -403,8 +434,6 @@ declare class ActionService {
     private ensureStart;
     private ensureFresh;
     private resolveTarget;
-    /** Persona-shaped options for the path engine (one coherent motor signature). */
-    private moveParams;
     /** Cognitive delay before an action. */
     private think;
     /** A small settle move while waiting, the way a hand never sits perfectly still. */
@@ -558,36 +587,6 @@ declare function scheduleToKeystrokes(ops: KeyOp[]): Array<{
     delayMs: number;
 }>;
 
-interface MoveOptions {
-    rng?: Rng;
-    /** approximate target size, feeds Fitts duration; default 24 */
-    targetWidth?: number;
-    /** allow overshoot-and-correct on long moves; default true */
-    overshoot?: boolean;
-    /** persona: move-duration divisor; default 1 */
-    speedFactor?: number;
-    /** persona: Bézier bow scale; default 1 */
-    curviness?: number;
-    /** persona: Gaussian jitter amplitude in px; default 1.4 */
-    jitterPx?: number;
-    /** persona: overshoot chance on a long move; default 0.5 */
-    overshootProb?: number;
-    /** persona: overshoot distance as fraction of travel; default 0.12 */
-    overshootMag?: number;
-    /** persona: -1/+1 curvature side bias; 0 = unbiased (default) */
-    handedness?: number;
-}
-declare function generateMove(from: Point, to: Point, options?: MoveOptions): CursorSample[];
-/** A point inside the rect, offset from dead-center (humans miss the middle).
- * `precision` is the spread as a fraction of the target; smaller = tighter. */
-declare function offCenterPoint(rect: Rect, rng?: Rng, precision?: number): Point;
-declare function sampleDwellMs(rng?: Rng, dwellScale?: number): number;
-declare function samplePressMs(rng?: Rng, pressScale?: number): number;
-declare function sampleKeyDelayMs(rng?: Rng): {
-    min: number;
-    max: number;
-};
-
 /** Hosts a localhost WebSocket and turns commands into awaited request/reply. */
 declare class ExtensionTransport {
     private readonly wss;
@@ -640,7 +639,6 @@ declare class ExtensionDriver implements BrowserDriver {
  */
 declare class OsCursorDriver implements BrowserDriver {
     private readonly transport;
-    private nut;
     private geom;
     constructor(transport: ExtensionTransport);
     snapshot(maxElements: number, includeText: boolean): Promise<PageSnapshot>;
@@ -671,7 +669,6 @@ declare class OsCursorDriver implements BrowserDriver {
     click(args: ClickArgs): Promise<void>;
     type(args: TypeArgs): Promise<void>;
     scroll(args: ScrollArgs): Promise<void>;
-    private ensureNut;
     private geometry;
 }
 

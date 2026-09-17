@@ -1,6 +1,6 @@
 # AgentCursor
 
-**Local, free, human-like browser automation over MCP — for agents, testing, and workflows.**
+**Local, free, human-like cursor for AI agents: any Mac app or browser tab, over MCP.**
 
 AgentCursor gives you (and any coding agent or automation script) a **real browser** driven with **visible, convincingly human cursor movement and timing**.
 
@@ -17,7 +17,23 @@ The major browser automation MCPs often make realistic movement a cloud-only fea
 > Status: phase 1 (Chrome extension) and phase 2 (macOS OS-cursor for genuinely
 > trusted events) are both implemented. See [`docs/DESIGN.md`](docs/DESIGN.md).
 
+## Quick start
+
+```bash
+git clone https://github.com/kumard3/agentcursor.git
+cd agentcursor && pnpm install && pnpm build
+node dist/index.js setup
+```
+
+`setup` starts the local service, lists the AI apps it finds on your machine (Claude Code, Cursor, VS Code, Codex, Windsurf, Claude Desktop, Gemini CLI) and opens a setup page at `http://127.0.0.1:8931`. From there you connect each app with one click, grant the two macOS permissions, load the optional Chrome extension, and press **Test the cursor**. Prefer the terminal? `node dist/index.js setup --all` connects every detected app (or `--client=cursor,codex`).
+
+Then ask your AI app something like: *"Use agentcursor: open Notes, create a new note and write a 3 item shopping list."*
+
+How it fits together: every AI app launches `agentcursor` as an ordinary stdio MCP server. The first launch starts one shared background service (MCP over HTTP at `127.0.0.1:8931/mcp`, the extension bridge on `8930`) and every later launch reuses it, so several apps can use AgentCursor at once without fighting over a port. After a rebuild, the next launch replaces an older running service; an idle service exits after 10 minutes. The service only accepts requests from this machine and rejects other websites (Host and Origin checks).
+
 ## Changelog (key updates)
+
+- **0.4.0**: Desktop control for any Mac app: `desktop_read` returns the window as compact text with `[dN]` refs from the macOS accessibility tree (a small Swift helper), then `desktop_click` / `desktop_type` / `desktop_key` / `desktop_scroll` drive the real cursor and keyboard with the same persona-based human motion. `desktop_screenshot` is a cropped, downscaled fallback. Chromium and Electron apps get their accessibility tree switched on automatically. New onboarding: `agentcursor setup` plus a local setup page that connects seven AI apps, checks permissions and tests the cursor. All AI apps now share one background service (stdio launches proxy to it), which removes the `port 8930 already in use` failure. The extension WebSocket now rejects connections from web pages.
 
 - **0.3.0**: Programmatic SDK — `import { AgentCursor } from "agentcursor"` with a Playwright-shaped locator API (`getByRole`/`getByText`/`getByLabel`/`getByPlaceholder`/`getByTestId`/css + chaining + `filter`/`nth` + `click`/`type`/`fill`/`hover`/`dragTo`/`press`/`scrollIntoView` + `boundingBox`/`isVisible`/`count`/`waitFor`), every action driven by the human cursor. `connect()` and `os()` lifecycles. Library entry split from the MCP bin so importing the package no longer boots a server; built with `tsup` (ships `.d.ts`). Locator resolution uses `@testing-library/dom` in the content script.
 - **0.2.9**: Active-tab resolution no longer requires Chrome to be the OS-focused window — it falls back to the active tab in any window, then any open http(s) tab. Fixes `No active tab found` when an agent drives the browser while you're in your editor/terminal (the normal case).
@@ -86,7 +102,7 @@ claude plugin marketplace add kumard3/agentcursor
 claude plugin install agentcursor
 ```
 
-That registers the `agentcursor` MCP server automatically (no manual `claude mcp add`). You still load the extension once (step 1 below). If you previously registered it by hand, remove that to avoid two servers fighting for the port: `claude mcp remove agentcursor`.
+That registers the `agentcursor` MCP server automatically (no manual `claude mcp add`). You still load the extension once (step 1 below) if you want browser tabs. If you previously registered it by hand, remove that to avoid duplicate tools: `claude mcp remove agentcursor`.
 
 ### 1. Load the extension
 
@@ -97,10 +113,12 @@ That registers the `agentcursor` MCP server automatically (no manual `claude mcp
 
 ### 2. Connect via MCP (agents, Cursor, Claude, custom tools, etc.)
 
-**Claude Code / Claude Desktop:**
+The easy way is `node dist/index.js setup` (see Quick start). To do it by hand:
+
+**Claude Code:**
 
 ```bash
-claude mcp add agentcursor -- node /absolute/path/to/agentcursor/dist/index.js
+claude mcp add --scope user agentcursor -- node /absolute/path/to/agentcursor/dist/index.js
 ```
 
 **Cursor, Windsurf, or any MCP-capable coding environment:**
@@ -120,7 +138,9 @@ Add to your MCP servers config (exact format depends on the host):
 
 **Any other MCP client** (including future Grok harnesses, custom agents, test runners that speak MCP) — just point it at the stdio server the same way.
 
-The server exposes the WebSocket bridge on `ws://127.0.0.1:8930` (override with `AGENTCURSOR_WS_PORT`). The extension auto-reconnects.
+**HTTP-capable clients** can skip the stdio launcher and point straight at `http://127.0.0.1:8931/mcp` while the service runs (`node dist/index.js serve` keeps it in the foreground).
+
+The service exposes the WebSocket bridge on `ws://127.0.0.1:8930` (override with `AGENTCURSOR_WS_PORT`; the HTTP port defaults to that plus one, or set `AGENTCURSOR_HTTP_PORT`). The extension auto-reconnects. `AGENTCURSOR_TOOLS=desktop` or `=browser` registers only one tool family, which keeps unused tool definitions out of your context.
 
 ### 3. Programmatic SDK (`import { AgentCursor }`)
 
@@ -190,6 +210,32 @@ A full runnable example is in [`examples/sdk-quickstart.mjs`](examples/sdk-quick
 Any driving action accepts `stealth: true` to deliver trusted events through the
 `chrome.debugger` driver (this shows Chrome's "debugging this browser" banner).
 
+## Desktop tools (any Mac app)
+
+No extension needed. Grant Accessibility (and Screen Recording, only for screenshots) to the app your AI runs in; the setup page has buttons for both.
+
+| Tool | What it does |
+| --- | --- |
+| `desktop_apps` | Running apps, frontmost marked. |
+| `desktop_open` | Open or switch to an app by name and bring it to the front. |
+| `desktop_read` | The window as compact text: buttons, fields, links, menus, list items and visible text, each with a `[dN]` ref and center point. `find` returns only the best matches for a label. |
+| `desktop_click` | Human path + click on a `[dN]` ref, a visible label (`text`), or `x/y`. Double and right click supported. |
+| `desktop_move` | Move there without clicking (hover menus, tooltips). |
+| `desktop_type` | Persona-timed typing into the focused field, or click a field first (`ref`, `into` label, `x/y`). `clear` replaces, `submit` presses Enter. |
+| `desktop_key` | Keys and shortcuts: `enter`, `esc`, `tab`, `cmd+s`, `cmd+shift+t`. |
+| `desktop_scroll` | Scroll by pixels over a target or where the cursor is. |
+| `desktop_screenshot` | One window (or the area around a ref), downscaled JPEG, with the formula to turn image pixels into screen `x/y`. For canvases and custom-drawn UI. |
+
+**Why text first.** Measured on a MacBook (text tokens estimated at 3.5 characters per token; image tokens from Anthropic's `width x height / 750`):
+
+| App | `desktop_read` (whole window) | `desktop_read find` / click by label | Screenshot at 1024px wide |
+| --- | --- | --- | --- |
+| Finder | ~454 | ~9 | 662 |
+| System Settings | ~543 | ~8 | 1181 |
+| Arc | ~705 | ~9 | 852 |
+
+The bigger saving is the loop: clicking by ref or label needs no screenshot to find coordinates and none to check where the click landed.
+
 ## Using as a Testing & Workflow Automation Tool
 
 AgentCursor is not only for agents — it's a practical local browser automation primitive you can use directly in tests and scripts via MCP or by importing the core.
@@ -247,6 +293,10 @@ multi-monitor / fractional-scaling setups is still rough.
 
 ## Known limitations
 
+- **Desktop control is macOS only for now.** It reads the accessibility tree, so apps that draw their own UI without accessibility (games, some canvases) need `desktop_screenshot` plus `x/y` clicks.
+- **macOS grants permissions to the app that launched AgentCursor** (Terminal, Cursor, Claude...), not to AgentCursor itself. If the shared service was first started from a different app, grant that one, or stop the service (`curl -X POST http://127.0.0.1:8931/shutdown`) and let your main app start it.
+- **Desktop typing does not render typo corrections.** The persona's timing applies, but only the final characters are typed.
+
 - **Content-script events are `isTrusted=false`.** For detection-sensitive sites pass `stealth: true` (the `chrome.debugger` driver, trusted events) or use the OS-cursor driver. The visible overlay cursor shows in every mode.
 - **React-controlled inputs** (X's composer, some design systems) can ignore content-script typing, which sets `value` directly. Use `stealth: true` (CDP `Input.insertText`) or the OS driver there.
 - **`wait_for` by text and the snapshot `text` field use `innerText`**, which does not pierce shadow DOM. `read_page`'s element list *does* traverse shadow roots, so prefer waiting on a `[ref]` over page text on web-component-heavy sites (X, Reddit).
@@ -277,6 +327,8 @@ pnpm test             # vitest (path-engine + coord-map unit tests)
 pnpm build:ext    # rebuild just the extension (no version change)
 pnpm reload       # rebuild the extension AND patch-bump the version, so a chrome://extensions reload is visibly new
 pnpm smoke        # end-to-end run: real MCP client + server, simulated browser (now covers screenshot/hover/status too)
+pnpm build:native # rebuild the macOS accessibility helper (dist/native/agentcursor-ax)
+AGENTCURSOR_HTTP_PORT=8931 node scripts/desktop-live.mjs   # live desktop run: reads Finder, types in TextEdit, closes it without saving
 ```
 
 The `smoke` script is also a good template for writing your own automation or test runners that drive AgentCursor over MCP.

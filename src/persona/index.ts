@@ -1,4 +1,5 @@
 import type { KeyOp } from "../protocol";
+import type { MoveOptions } from "../path-engine";
 import { clamp } from "../path-engine/geometry";
 import { createRng, type Rng } from "../path-engine/rng";
 import { buildTypingSchedule } from "./typing";
@@ -110,6 +111,20 @@ export class Persona {
     const t = this.traits();
     const raw = Math.min(chars, 600) * t.readMsPerChar * this.rng.range(0.6, 1.4);
     return Math.round(clamp(raw, 120, 4000));
+  }
+
+  moveOptions(targetWidth: number): MoveOptions {
+    const t = this.traits();
+    return {
+      rng: this.rng,
+      targetWidth,
+      speedFactor: t.speedFactor,
+      curviness: t.curviness,
+      jitterPx: t.jitterPx,
+      overshootProb: t.overshootProb,
+      overshootMag: t.overshootMag,
+      handedness: t.handedness,
+    };
   }
 
   keySchedule(text: string): KeyOp[] {
