@@ -5,7 +5,7 @@ export default defineConfig([
     entry: { lib: "src/lib.ts" },
     format: ["esm"],
     dts: true,
-    clean: true,
+    clean: ["!native/**"],
     target: "node20",
     outDir: "dist",
   },
@@ -14,6 +14,7 @@ export default defineConfig([
     format: ["esm"],
     target: "node20",
     outDir: "dist",
+    loader: { ".html": "text" },
     banner: { js: "#!/usr/bin/env node" },
   },
 ]);

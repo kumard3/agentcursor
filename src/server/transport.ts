@@ -34,7 +34,12 @@ export class ExtensionTransport {
       }
       process.stderr.write(`agentcursor: WebSocket server error: ${err.message}\n`);
     });
-    this.wss.on("connection", (ws) => {
+    this.wss.on("connection", (ws, req) => {
+      const origin = req.headers.origin;
+      if (origin && !origin.startsWith("chrome-extension://")) {
+        ws.close(1008, "origin not allowed");
+        return;
+      }
       this.socket = ws;
       ws.on("message", (data) => this.onMessage(data.toString()));
       ws.on("close", () => {
