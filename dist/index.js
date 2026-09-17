@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
-// src/index.ts
-import { readFileSync } from "fs";
+// src/server/create.ts
+import { readFileSync, statSync } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join2 } from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/path-engine/geometry.ts
 function distance(a, b) {
@@ -42,14 +44,14 @@ function easeParam(timeFraction, skew) {
 }
 
 // src/path-engine/rng.ts
-function createRng(seed2) {
-  let state = (seed2 ?? Math.floor(Math.random() * 4294967295)) >>> 0;
+function createRng(seed) {
+  let state = (seed ?? Math.floor(Math.random() * 4294967295)) >>> 0;
   const next = () => {
     state = state + 1831565813 >>> 0;
-    let z2 = state;
-    z2 = Math.imul(z2 ^ z2 >>> 15, z2 | 1);
-    z2 ^= z2 + Math.imul(z2 ^ z2 >>> 7, z2 | 61);
-    return ((z2 ^ z2 >>> 14) >>> 0) / 4294967296;
+    let z3 = state;
+    z3 = Math.imul(z3 ^ z3 >>> 15, z3 | 1);
+    z3 ^= z3 + Math.imul(z3 ^ z3 >>> 7, z3 | 61);
+    return ((z3 ^ z3 >>> 14) >>> 0) / 4294967296;
   };
   const range = (min, max) => min + (max - min) * next();
   const int = (min, max) => Math.floor(range(min, max + 1));
@@ -219,30 +221,30 @@ function wrongChar(ch, rng) {
   const pick = opts[rng.int(0, opts.length - 1)];
   return ch === lower ? pick : pick.toUpperCase();
 }
-function buildTypingSchedule(text2, rng, traits) {
-  const base = 12e3 / traits.wpm;
+function buildTypingSchedule(text3, rng, traits) {
+  const base2 = 12e3 / traits.wpm;
   const ops = [];
   let first = true;
-  for (let i = 0; i < text2.length; i++) {
-    const ch = text2[i];
-    const prev = text2[i - 1];
-    let delay = Math.max(8, rng.gaussian(base, base * 0.35));
+  for (let i = 0; i < text3.length; i++) {
+    const ch = text3[i];
+    const prev = text3[i - 1];
+    let delay = Math.max(8, rng.gaussian(base2, base2 * 0.35));
     if (first) {
       delay += traits.reactionMs * rng.range(0.6, 1.1);
       first = false;
     } else if (prev === " ") {
-      delay += base * rng.range(1.5, 3.5);
+      delay += base2 * rng.range(1.5, 3.5);
     } else if (prev && ".?!".includes(prev)) {
-      delay += base * rng.range(3, 6);
+      delay += base2 * rng.range(3, 6);
     } else if (rng.bool(0.06)) {
-      delay += base * rng.range(2, 5);
+      delay += base2 * rng.range(2, 5);
     }
     if (/[a-zA-Z]/.test(ch) && rng.bool(traits.errorRate)) {
       const wrong = wrongChar(ch, rng);
       if (wrong) {
         ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay) });
-        ops.push({ t: "back", delayMs: Math.round(base * rng.range(2, 5)) });
-        ops.push({ t: "key", ch, delayMs: Math.round(base * rng.range(0.8, 1.4)) });
+        ops.push({ t: "back", delayMs: Math.round(base2 * rng.range(2, 5)) });
+        ops.push({ t: "key", ch, delayMs: Math.round(base2 * rng.range(0.8, 1.4)) });
         continue;
       }
     }
@@ -310,17 +312,30 @@ var Persona = class {
     const raw = Math.min(chars, 600) * t.readMsPerChar * this.rng.range(0.6, 1.4);
     return Math.round(clamp(raw, 120, 4e3));
   }
-  keySchedule(text2) {
+  moveOptions(targetWidth) {
     const t = this.traits();
-    return buildTypingSchedule(text2, this.rng, {
+    return {
+      rng: this.rng,
+      targetWidth,
+      speedFactor: t.speedFactor,
+      curviness: t.curviness,
+      jitterPx: t.jitterPx,
+      overshootProb: t.overshootProb,
+      overshootMag: t.overshootMag,
+      handedness: t.handedness
+    };
+  }
+  keySchedule(text3) {
+    const t = this.traits();
+    return buildTypingSchedule(text3, this.rng, {
       wpm: t.wpm,
       errorRate: t.errorRate,
       reactionMs: t.reactionMs
     });
   }
 };
-function createPersona(seed2, opts = {}) {
-  return new Persona({ seed: seed2, ...opts });
+function createPersona(seed, opts = {}) {
+  return new Persona({ seed, ...opts });
 }
 function sampleTraits(rng) {
   return {
@@ -348,9 +363,9 @@ var rand = (min, max) => min + Math.random() * (max - min);
 
 // src/action/service.ts
 var ActionService = class {
-  constructor(driver2, persona2) {
-    this.driver = driver2;
-    this.persona = persona2 ?? createPersona();
+  constructor(driver, persona) {
+    this.driver = driver;
+    this.persona = persona ?? createPersona();
   }
   driver;
   snapshot = null;
@@ -370,7 +385,7 @@ var ActionService = class {
     const { point, width } = await this.resolveTarget(opts);
     this.persona.tick();
     await this.think(distance(from, point));
-    const samples = generateMove(from, point, this.moveParams(width));
+    const samples = generateMove(from, point, this.persona.moveOptions(width));
     await this.driver.move(samples, mode(opts.stealth));
     this.lastPos = point;
     return point;
@@ -382,7 +397,7 @@ var ActionService = class {
     this.persona.tick();
     await this.think(distance(from, point));
     const t = this.persona.traits();
-    const samples = generateMove(from, point, this.moveParams(width));
+    const samples = generateMove(from, point, this.persona.moveOptions(width));
     await this.driver.click({
       samples,
       target: point,
@@ -399,13 +414,13 @@ var ActionService = class {
     if (opts.ref) await this.click({ ref: opts.ref, stealth: opts.stealth });
     else if (opts.rect) await this.click({ rect: opts.rect, stealth: opts.stealth });
     this.persona.tick();
-    const base = 12e3 / this.persona.traits().wpm;
+    const base2 = 12e3 / this.persona.traits().wpm;
     const schedule = opts.replace ? void 0 : this.persona.keySchedule(opts.text);
     await this.driver.type({
       text: opts.text,
       ref: opts.ref,
-      perKeyMinMs: Math.round(base * 0.6),
-      perKeyMaxMs: Math.round(base * 1.8),
+      perKeyMinMs: Math.round(base2 * 0.6),
+      perKeyMaxMs: Math.round(base2 * 1.8),
       mode: mode(opts.stealth),
       replace: opts.replace,
       schedule
@@ -463,7 +478,7 @@ var ActionService = class {
     const end = await this.resolveTarget(to);
     this.persona.tick();
     await this.think(distance(start.point, end.point));
-    const samples = generateMove(start.point, end.point, this.moveParams(end.width));
+    const samples = generateMove(start.point, end.point, this.persona.moveOptions(end.width));
     await this.driver.drag({
       samples,
       target: end.point,
@@ -472,23 +487,23 @@ var ActionService = class {
     });
   }
   /** Identification: rank on-screen elements by how well their text/name matches a query. */
-  async find(text2, opts = {}) {
+  async find(text3, opts = {}) {
     const snap = await this.readPage(200, true);
     await sleep(this.persona.readPauseMs(Math.min((snap.text ?? "").length, 400)));
-    return rankByText(snap.elements, text2).slice(0, opts.maxResults ?? 8);
+    return rankByText(snap.elements, text3).slice(0, opts.maxResults ?? 8);
   }
   /** Identification + interaction: find the best text match, then human-click it (re-reading if needed). */
-  async clickText(text2, opts = {}) {
+  async clickText(text3, opts = {}) {
     const scan = await this.readPage(200, true);
     await sleep(this.persona.readPauseMs(Math.min((scan.text ?? "").length, 400)));
-    let matches = rankByText(scan.elements, text2);
+    let matches = rankByText(scan.elements, text3);
     for (let attempt = 0; attempt < 2 && matches.length === 0; attempt++) {
       await sleep(400);
-      matches = rankByText((await this.readPage(200, true)).elements, text2);
+      matches = rankByText((await this.readPage(200, true)).elements, text3);
     }
     if (matches.length === 0) {
       throw new Error(
-        `No element matching text "${text2}". Call read_page or screenshot to see what's on the page.`
+        `No element matching text "${text3}". Call read_page or screenshot to see what's on the page.`
       );
     }
     const matched = matches[Math.min(opts.nth ?? 0, matches.length - 1)];
@@ -530,20 +545,6 @@ var ActionService = class {
     const width = Math.max(Math.min(el.rect.width, el.rect.height), 8);
     return { point: offCenterPoint(el.rect, this.persona.rng, precision), width };
   }
-  /** Persona-shaped options for the path engine (one coherent motor signature). */
-  moveParams(targetWidth) {
-    const t = this.persona.traits();
-    return {
-      rng: this.persona.rng,
-      targetWidth,
-      speedFactor: t.speedFactor,
-      curviness: t.curviness,
-      jitterPx: t.jitterPx,
-      overshootProb: t.overshootProb,
-      overshootMag: t.overshootMag,
-      handedness: t.handedness
-    };
-  }
   /** Cognitive delay before an action. */
   think(distancePx) {
     return sleep(this.persona.thinkTimeMs(distancePx));
@@ -555,7 +556,7 @@ var ActionService = class {
       x: this.lastPos.x + this.persona.rng.gaussian(0, 2.5),
       y: this.lastPos.y + this.persona.rng.gaussian(0, 2.5)
     };
-    await this.driver.move(generateMove(this.lastPos, to, this.moveParams(6)), "content");
+    await this.driver.move(generateMove(this.lastPos, to, this.persona.moveOptions(6)), "content");
     this.lastPos = to;
   }
   async findElement(ref) {
@@ -598,6 +599,397 @@ function rankByText(elements, query) {
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.map((s) => s.el);
+}
+
+// src/desktop/service.ts
+import { execFile as execFile2 } from "child_process";
+import { mkdtemp, readFile, rm } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
+import { promisify } from "util";
+
+// src/drivers/nut.ts
+var loaded = null;
+function loadNut() {
+  loaded ??= (async () => {
+    const spec = "@nut-tree-fork/nut-js";
+    try {
+      const nut = await import(spec);
+      nut.mouse.config.autoDelayMs = 0;
+      nut.keyboard.config.autoDelayMs = 0;
+      return nut;
+    } catch {
+      loaded = null;
+      throw new Error(
+        "OS cursor control needs @nut-tree-fork/nut-js. Install it with: pnpm add @nut-tree-fork/nut-js"
+      );
+    }
+  })();
+  return loaded;
+}
+function nutButton(nut, button) {
+  if (button === "right") return nut.Button.RIGHT;
+  if (button === "middle") return nut.Button.MIDDLE;
+  return nut.Button.LEFT;
+}
+async function playPath(nut, samples, toScreen = (p) => p) {
+  const start = performance.now();
+  for (const s of samples) {
+    await sleepUntil(start + s.t);
+    const p = toScreen(s);
+    await nut.mouse.setPosition(new nut.Point(p.x, p.y));
+  }
+}
+async function pressButton(nut, button, pressMs, double = false) {
+  const b = nutButton(nut, button);
+  for (let i = 0; i < (double ? 2 : 1); i++) {
+    if (i) await sleep(40);
+    await nut.mouse.pressButton(b);
+    await sleep(pressMs);
+    await nut.mouse.releaseButton(b);
+  }
+}
+async function typeText(nut, text3, opts) {
+  if (opts.schedule?.length) {
+    for (const k of scheduleToKeystrokes(opts.schedule)) {
+      await nut.keyboard.type(k.ch);
+      await sleep(Math.max(0, k.delayMs));
+    }
+    return;
+  }
+  for (const ch of text3) {
+    await nut.keyboard.type(ch);
+    await sleep(rand(opts.perKeyMinMs, opts.perKeyMaxMs));
+  }
+}
+async function scrollSteps(nut, dx, dy, steps) {
+  const n = Math.max(1, steps);
+  for (let i = 0; i < n; i++) {
+    const v = dy ? Math.max(1, Math.round(Math.abs(dy / n))) : 0;
+    const h = dx ? Math.max(1, Math.round(Math.abs(dx / n))) : 0;
+    if (v) await (dy >= 0 ? nut.mouse.scrollDown(v) : nut.mouse.scrollUp(v));
+    if (h) await (dx >= 0 ? nut.mouse.scrollRight(h) : nut.mouse.scrollLeft(h));
+    await sleep(rand(12, 28));
+  }
+}
+var KEY_ALIASES = {
+  cmd: "LeftCmd",
+  command: "LeftCmd",
+  meta: "LeftCmd",
+  super: "LeftSuper",
+  win: "LeftWin",
+  ctrl: "LeftControl",
+  control: "LeftControl",
+  alt: "LeftAlt",
+  option: "LeftAlt",
+  opt: "LeftAlt",
+  shift: "LeftShift",
+  enter: "Enter",
+  return: "Return",
+  esc: "Escape",
+  escape: "Escape",
+  tab: "Tab",
+  space: "Space",
+  backspace: "Backspace",
+  delete: "Delete",
+  del: "Delete",
+  up: "Up",
+  down: "Down",
+  left: "Left",
+  right: "Right",
+  arrowup: "Up",
+  arrowdown: "Down",
+  arrowleft: "Left",
+  arrowright: "Right",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  "-": "Minus",
+  "=": "Equal",
+  ",": "Comma",
+  ".": "Period",
+  "/": "Slash",
+  ";": "Semicolon",
+  "'": "Quote",
+  "[": "LeftBracket",
+  "]": "RightBracket",
+  "\\": "Backslash",
+  "`": "Grave"
+};
+function parseKeyCombo(combo) {
+  const parts = combo.split("+").map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) throw new Error("Empty key combo");
+  return parts.map((part) => {
+    const lower = part.toLowerCase();
+    if (KEY_ALIASES[lower]) return KEY_ALIASES[lower];
+    if (/^[a-z]$/.test(lower)) return lower.toUpperCase();
+    if (/^[0-9]$/.test(lower)) return `Num${lower}`;
+    if (/^f([1-9]|1[0-9]|2[0-4])$/.test(lower)) return lower.toUpperCase();
+    throw new Error(`Unknown key "${part}" in "${combo}"`);
+  });
+}
+async function pressCombo(nut, combo, holdMs) {
+  const keys = parseKeyCombo(combo).map((name) => nut.Key[name]);
+  await nut.keyboard.pressKey(...keys);
+  await sleep(holdMs);
+  await nut.keyboard.releaseKey(...keys.reverse());
+}
+
+// src/desktop/ax.ts
+import { execFile } from "child_process";
+import { existsSync } from "fs";
+import { fileURLToPath } from "url";
+var helperPath = fileURLToPath(new URL("./native/agentcursor-ax", import.meta.url));
+var desktopSupported = () => process.platform === "darwin" && existsSync(helperPath);
+function ax(args, timeoutMs = 2e4) {
+  if (process.platform !== "darwin") {
+    return Promise.reject(new Error("Desktop control currently supports macOS only."));
+  }
+  return new Promise((resolve, reject) => {
+    execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+      if (err?.code === "ENOENT") {
+        return reject(new Error(`Desktop helper missing at ${helperPath}. Run \`pnpm build\`.`));
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        return reject(new Error(err?.message ?? "Desktop helper returned no output"));
+      }
+      if (parsed?.error) return reject(new Error(parsed.error));
+      resolve(parsed);
+    });
+  });
+}
+var appArgs = (app) => app === void 0 ? [] : typeof app === "number" ? ["--pid", String(app)] : ["--app", app];
+
+// src/desktop/service.ts
+var run = promisify(execFile2);
+var DesktopService = class {
+  constructor(persona) {
+    this.persona = persona;
+  }
+  persona;
+  view = null;
+  currentPid;
+  permissions() {
+    return ax(["permissions"]);
+  }
+  requestPermission(kind) {
+    return ax([kind === "screen" ? "request-screen" : "request-accessibility"]);
+  }
+  apps() {
+    return ax(["apps"]);
+  }
+  async open(app) {
+    const before = (await this.apps()).find((a) => a.active)?.pid;
+    await run("open", ["-a", app]).catch((e) => {
+      throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
+    });
+    const want = app.toLowerCase();
+    for (let i = 0; i < 40; i++) {
+      const front = (await this.apps()).find((a) => a.active);
+      const name = front?.name.toLowerCase() ?? "";
+      if (front && (name === want || name.includes(want) || want.includes(name) || front.pid !== before)) {
+        this.currentPid = front.pid;
+        this.view = null;
+        return front;
+      }
+      await sleep(250);
+    }
+    throw new Error(`Opened "${app}" but it did not come to the front.`);
+  }
+  async read(opts = {}) {
+    const snap = await ax([
+      "snapshot",
+      ...appArgs(opts.app ?? this.currentPid),
+      "--max",
+      String(opts.max ?? 150)
+    ]);
+    this.currentPid = snap.pid;
+    this.view = {
+      app: { name: snap.name, pid: snap.pid, bundleId: snap.bundleId },
+      window: snap.window,
+      truncated: snap.truncated,
+      elements: snap.elements.map((e, i) => ({
+        ref: `d${i + 1}`,
+        role: e.role,
+        name: e.name,
+        value: e.value,
+        rect: { x: e.x, y: e.y, width: e.w, height: e.h },
+        enabled: e.enabled,
+        focused: e.focused
+      }))
+    };
+    return this.view;
+  }
+  async find(text3, opts = {}) {
+    const view = await this.read({ app: opts.app, max: 400 });
+    return rankByText(view.elements, text3).slice(0, opts.maxResults ?? 8);
+  }
+  async click(t) {
+    const target2 = await this.resolve(t);
+    await this.front(target2.pid);
+    await this.moveHuman(target2.point, target2.width);
+    const traits = this.persona.traits();
+    await sleep(sampleDwellMs(this.persona.rng, traits.dwellScale));
+    await pressButton(await loadNut(), t.button ?? "left", samplePressMs(this.persona.rng, traits.pressScale), t.double);
+    return describe(target2);
+  }
+  async move(t) {
+    const target2 = await this.resolve(t);
+    await this.front(target2.pid);
+    await this.moveHuman(target2.point, target2.width);
+    return describe(target2);
+  }
+  async type(opts) {
+    if (opts.ref || opts.text || typeof opts.x === "number") await this.click(opts);
+    else await this.front(this.currentPid);
+    const nut = await loadNut();
+    if (opts.clear) {
+      await pressCombo(nut, process.platform === "darwin" ? "cmd+a" : "ctrl+a", 60);
+      await pressCombo(nut, "backspace", 40);
+    }
+    this.persona.tick();
+    const base2 = 12e3 / this.persona.traits().wpm;
+    await typeText(nut, opts.value, {
+      schedule: this.persona.keySchedule(opts.value),
+      perKeyMinMs: base2 * 0.6,
+      perKeyMaxMs: base2 * 1.8
+    });
+    if (opts.submit) await pressCombo(nut, "enter", samplePressMs(this.persona.rng));
+  }
+  async key(combo) {
+    await this.front(this.currentPid);
+    this.persona.tick();
+    await sleep(this.persona.thinkTimeMs(0));
+    await pressCombo(await loadNut(), combo, samplePressMs(this.persona.rng, this.persona.traits().pressScale));
+  }
+  async scroll(opts) {
+    if (opts.ref || opts.text || typeof opts.x === "number") {
+      const target2 = await this.resolve(opts);
+      await this.front(target2.pid);
+      await this.moveHuman(target2.point, target2.width);
+    } else {
+      await this.front(this.currentPid);
+    }
+    this.persona.tick();
+    const steps = Math.max(3, Math.round(Math.abs(opts.dy || opts.dx || 0) / this.persona.rng.range(80, 140)));
+    await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
+    this.view = null;
+  }
+  async screenshot(opts = {}) {
+    let rect;
+    let label;
+    if (opts.ref) {
+      const el = this.element(opts.ref);
+      const pad = 40;
+      rect = { x: el.rect.x - pad, y: el.rect.y - pad, width: el.rect.width + pad * 2, height: el.rect.height + pad * 2 };
+      label = `around [${el.ref}]`;
+    } else {
+      const info = await ax(["window", ...appArgs(opts.app ?? this.currentPid)]);
+      rect = { x: info.window.x, y: info.window.y, width: info.window.w, height: info.window.h };
+      label = `${info.name} window`;
+    }
+    const dir = await mkdtemp(join(tmpdir(), "agentcursor-shot-"));
+    const file = join(dir, "shot.jpg");
+    try {
+      await run("screencapture", ["-x", "-t", "jpg", `-R${rect.x},${rect.y},${rect.width},${rect.height}`, file]);
+      const maxWidth = opts.maxWidth ?? 1024;
+      if ((await imageSize(file)).width > maxWidth) {
+        await run("sips", ["--resampleWidth", String(maxWidth), file]);
+      }
+      const size = await imageSize(file);
+      const scale = rect.width / size.width;
+      return {
+        data: (await readFile(file)).toString("base64"),
+        mimeType: "image/jpeg",
+        note: `${label}: image ${size.width}x${size.height} covers screen ${rect.x},${rect.y} ${rect.width}x${rect.height}. Screen x = ${rect.x} + px*${scale.toFixed(3)}, y = ${rect.y} + py*${scale.toFixed(3)}.`
+      };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  async wiggle() {
+    const nut = await loadNut();
+    const start = await nut.mouse.getPosition();
+    let from = { x: start.x, y: start.y };
+    for (const to of [
+      { x: start.x + 160, y: start.y - 70 },
+      { x: start.x + 70, y: start.y + 100 },
+      { x: start.x, y: start.y }
+    ]) {
+      await playPath(nut, generateMove(from, to, this.persona.moveOptions(24)));
+      await sleep(150);
+      from = to;
+    }
+  }
+  element(ref) {
+    const el = this.view?.elements.find((e) => e.ref === ref);
+    if (!el) throw new Error(`Unknown ref '${ref}'. Refs expire after scrolling or switching apps; call desktop_read again.`);
+    return el;
+  }
+  async resolve(t) {
+    if (typeof t.x === "number" && typeof t.y === "number") {
+      return { point: { x: t.x, y: t.y }, width: 24, pid: this.currentPid };
+    }
+    let el;
+    if (t.ref) {
+      el = this.element(t.ref);
+    } else if (t.text) {
+      el = (await this.find(t.text, { app: t.app, maxResults: 1 }))[0];
+      if (!el) {
+        throw new Error(`Nothing labelled "${t.text}" in ${this.view?.app.name ?? "the app"}. Try desktop_read or desktop_screenshot.`);
+      }
+    } else {
+      throw new Error("Provide a ref, text, or x and y.");
+    }
+    const precision = this.persona.traits().precision;
+    return {
+      point: offCenterPoint(el.rect, this.persona.rng, precision),
+      width: Math.max(Math.min(el.rect.width, el.rect.height), 8),
+      pid: this.view?.app.pid,
+      el
+    };
+  }
+  async moveHuman(to, width) {
+    const nut = await loadNut();
+    const pos = await nut.mouse.getPosition();
+    const from = { x: pos.x, y: pos.y };
+    this.persona.tick();
+    await sleep(this.persona.thinkTimeMs(distance(from, to)));
+    await playPath(nut, generateMove(from, to, this.persona.moveOptions(width)));
+  }
+  async front(pid) {
+    if (pid) await ax(["activate", "--pid", String(pid)]).catch(() => void 0);
+  }
+};
+function describe(target2) {
+  const at = `(${Math.round(target2.point.x)}, ${Math.round(target2.point.y)})`;
+  return target2.el ? `[${target2.el.ref}] ${target2.el.role} "${target2.el.name}" at ${at}` : at;
+}
+async function imageSize(file) {
+  const { stdout } = await run("sips", ["-g", "pixelWidth", "-g", "pixelHeight", file]);
+  return {
+    width: Number(/pixelWidth: (\d+)/.exec(stdout)?.[1] ?? 0),
+    height: Number(/pixelHeight: (\d+)/.exec(stdout)?.[1] ?? 0)
+  };
+}
+function formatView(view, only) {
+  const w = view.window;
+  const lines = [`${view.app.name} window "${w.title}" @${w.x},${w.y} ${w.w}x${w.h} (element @x,y = center)`];
+  for (const e of only ?? view.elements) lines.push(formatElement(e));
+  if (!only && view.truncated) lines.push("(more elements hidden; pass a larger max)");
+  return lines.join("\n");
+}
+function formatElement(e) {
+  const name = e.name ? ` "${e.name}"` : "";
+  const value = e.value ? ` value="${e.value.length > 60 ? `${e.value.slice(0, 60)}\u2026` : e.value}"` : "";
+  const flags = `${e.enabled === false ? " disabled" : ""}${e.focused ? " focused" : ""}`;
+  const cx = Math.round(e.rect.x + e.rect.width / 2);
+  const cy = Math.round(e.rect.y + e.rect.height / 2);
+  return `[${e.ref}] ${e.role}${name}${value} @${cx},${cy}${flags}`;
 }
 
 // src/drivers/extension-driver.ts
@@ -695,22 +1087,11 @@ function screenToViewport(p, g) {
 }
 
 // src/drivers/os-cursor-driver.ts
-async function loadNut() {
-  const spec = "@nut-tree-fork/nut-js";
-  try {
-    return await import(spec);
-  } catch {
-    throw new Error(
-      "The OS-cursor driver needs @nut-tree-fork/nut-js. Install it with: pnpm add @nut-tree-fork/nut-js"
-    );
-  }
-}
 var OsCursorDriver = class {
   constructor(transport) {
     this.transport = transport;
   }
   transport;
-  nut = null;
   geom = null;
   async snapshot(maxElements, includeText) {
     return await this.transport.send({
@@ -749,7 +1130,7 @@ var OsCursorDriver = class {
     });
   }
   async drag(args) {
-    const nut = await this.ensureNut();
+    const nut = await loadNut();
     const g = await this.geometry();
     const first = args.samples[0];
     if (!first) return;
@@ -774,67 +1155,24 @@ var OsCursorDriver = class {
     );
   }
   async cursorState() {
-    const nut = await this.ensureNut();
+    const nut = await loadNut();
     const pos = await nut.mouse.getPosition();
     return screenToViewport(pos, await this.geometry());
   }
   async move(samples, _mode) {
-    const nut = await this.ensureNut();
     const g = await this.geometry();
-    const start = performance.now();
-    for (const s of samples) {
-      await sleepUntil(start + s.t);
-      const screen = viewportToScreen(s, g);
-      await nut.mouse.setPosition(new nut.Point(screen.x, screen.y));
-    }
+    await playPath(await loadNut(), samples, (p) => viewportToScreen(p, g));
   }
   async click(args) {
-    const nut = await this.ensureNut();
     await this.move(args.samples, args.mode);
     await sleep(args.preClickDwellMs);
-    const button = nutButton(nut, args.button);
-    await nut.mouse.pressButton(button);
-    await sleep(args.pressMs);
-    await nut.mouse.releaseButton(button);
-    if (args.dblclick) {
-      await sleep(40);
-      await nut.mouse.pressButton(button);
-      await sleep(args.pressMs);
-      await nut.mouse.releaseButton(button);
-    }
+    await pressButton(await loadNut(), args.button, args.pressMs, args.dblclick);
   }
   async type(args) {
-    const nut = await this.ensureNut();
-    nut.keyboard.config.autoDelayMs = 0;
-    if (args.schedule?.length) {
-      for (const k of scheduleToKeystrokes(args.schedule)) {
-        await nut.keyboard.type(k.ch);
-        await sleep(Math.max(0, k.delayMs));
-      }
-      return;
-    }
-    for (const ch of args.text) {
-      await nut.keyboard.type(ch);
-      await sleep(rand(args.perKeyMinMs, args.perKeyMaxMs));
-    }
+    await typeText(await loadNut(), args.text, args);
   }
   async scroll(args) {
-    const nut = await this.ensureNut();
-    const steps = Math.max(1, args.steps);
-    const perStep = args.dy / steps;
-    for (let i = 0; i < steps; i++) {
-      const amount = Math.max(1, Math.round(Math.abs(perStep)));
-      if (perStep >= 0) await nut.mouse.scrollDown(amount);
-      else await nut.mouse.scrollUp(amount);
-      await sleep(rand(12, 28));
-    }
-  }
-  async ensureNut() {
-    if (!this.nut) {
-      this.nut = await loadNut();
-      this.nut.mouse.config.autoDelayMs = 0;
-    }
-    return this.nut;
+    await scrollSteps(await loadNut(), 0, args.dy, args.steps);
   }
   async geometry() {
     if (!this.geom) {
@@ -845,294 +1183,350 @@ var OsCursorDriver = class {
     return this.geom;
   }
 };
-function nutButton(nut, button) {
-  if (button === "right") return nut.Button.RIGHT;
-  if (button === "middle") return nut.Button.MIDDLE;
-  return nut.Button.LEFT;
-}
 
 // src/protocol/index.ts
 var DEFAULT_WS_PORT = 8930;
 var PROTOCOL_VERSION = 1;
 
-// src/server/transport.ts
-import { randomUUID } from "crypto";
-import { WebSocket, WebSocketServer } from "ws";
-var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
-var ExtensionTransport = class {
-  wss;
-  socket = null;
-  pending = /* @__PURE__ */ new Map();
-  constructor(port2 = DEFAULT_WS_PORT) {
-    this.wss = new WebSocketServer({ host: "127.0.0.1", port: port2 });
-    this.wss.on("error", (err) => {
-      if (err.code === "EADDRINUSE") {
-        process.stderr.write(
-          `agentcursor: port ${port2} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
-`
-        );
-        process.exit(1);
-      }
-      process.stderr.write(`agentcursor: WebSocket server error: ${err.message}
-`);
-    });
-    this.wss.on("connection", (ws) => {
-      this.socket = ws;
-      ws.on("message", (data) => this.onMessage(data.toString()));
-      ws.on("close", () => {
-        if (this.socket === ws) this.socket = null;
-      });
-      ws.on("error", () => void 0);
-    });
-  }
-  get connected() {
-    return this.socket?.readyState === WebSocket.OPEN;
-  }
-  send(command, timeoutMs = 3e4) {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error(NOT_CONNECTED));
-    }
-    const id = randomUUID();
-    const envelope = { v: PROTOCOL_VERSION, id, command };
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Command '${command.kind}' timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      socket.send(JSON.stringify(envelope));
-    });
-  }
-  onMessage(raw) {
-    let result;
-    try {
-      result = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    const entry = this.pending.get(result.id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    this.pending.delete(result.id);
-    if (result.ok) entry.resolve(result.data);
-    else entry.reject(new Error(result.error));
-  }
-  close() {
-    for (const entry of this.pending.values()) clearTimeout(entry.timer);
-    this.pending.clear();
-    this.wss.close();
-  }
-};
-
-// src/server/tools.ts
+// src/server/desktop-tools.ts
 import { z } from "zod";
 function text(body) {
   return { content: [{ type: "text", text: body }] };
 }
-function registerTools(server2, action2) {
-  server2.registerTool(
+var target = {
+  ref: z.string().optional().describe("[dN] ref from desktop_read"),
+  text: z.string().optional().describe("visible text or label to target"),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  app: z.string().optional()
+};
+function registerDesktopTools(server, desktop) {
+  server.registerTool(
+    "desktop_apps",
+    { description: "List running Mac apps; * marks the frontmost one.", inputSchema: {} },
+    async () => text((await desktop.apps()).map((a) => `${a.active ? "*" : " "} ${a.name} (pid ${a.pid})`).join("\n"))
+  );
+  server.registerTool(
+    "desktop_open",
+    {
+      description: "Open or switch to a Mac app by name (Notes, Slack, Finder, Safari...) and bring it to the front.",
+      inputSchema: { app: z.string() }
+    },
+    async ({ app }) => {
+      const a = await desktop.open(app);
+      return text(`${a.name} (pid ${a.pid}) is frontmost`);
+    }
+  );
+  server.registerTool(
+    "desktop_read",
+    {
+      description: "Read an app window as compact text: buttons, fields, links, menus and visible text, each with a [dN] ref and center point. Costs far fewer tokens than a screenshot, so call it before clicking. `find` returns only the best matches for a label. Defaults to the app you last opened or read.",
+      inputSchema: {
+        app: z.string().optional(),
+        find: z.string().optional(),
+        max: z.number().int().min(1).max(500).optional()
+      }
+    },
+    async ({ app, find, max }) => {
+      if (find) {
+        const matches = await desktop.find(find, { app });
+        return text(matches.length ? matches.map(formatElement).join("\n") : `Nothing matching "${find}".`);
+      }
+      return text(formatView(await desktop.read({ app, max })));
+    }
+  );
+  server.registerTool(
+    "desktop_click",
+    {
+      description: "Move the real cursor along a human path and click: a [dN] ref, visible text/label, or screen x/y. Brings the app to the front first.",
+      inputSchema: {
+        ...target,
+        button: z.enum(["left", "right", "middle"]).optional(),
+        double: z.boolean().optional()
+      }
+    },
+    async (args) => text(`clicked ${await desktop.click(args)}`)
+  );
+  server.registerTool(
+    "desktop_move",
+    {
+      description: "Move the real cursor to a ref, label, or x/y without clicking (menus, tooltips, hover states).",
+      inputSchema: target
+    },
+    async (args) => text(`moved to ${await desktop.move(args)}`)
+  );
+  server.registerTool(
+    "desktop_type",
+    {
+      description: "Type with human timing. Clicks a field first when given ref, into (label) or x/y; otherwise types into the focused field. clear replaces the current text, submit presses Enter.",
+      inputSchema: {
+        text: z.string(),
+        ref: z.string().optional(),
+        into: z.string().optional(),
+        x: z.number().optional(),
+        y: z.number().optional(),
+        app: z.string().optional(),
+        clear: z.boolean().optional(),
+        submit: z.boolean().optional()
+      }
+    },
+    async ({ text: value, into, ...rest2 }) => {
+      await desktop.type({ ...rest2, text: into, value });
+      return text(`typed ${value.length} chars${rest2.submit ? " and pressed Enter" : ""}`);
+    }
+  );
+  server.registerTool(
+    "desktop_key",
+    {
+      description: "Press a key or shortcut in the current app: enter, esc, tab, up, cmd+s, cmd+shift+t, ctrl+c.",
+      inputSchema: { keys: z.string() }
+    },
+    async ({ keys }) => {
+      await desktop.key(keys);
+      return text(`pressed ${keys}`);
+    }
+  );
+  server.registerTool(
+    "desktop_scroll",
+    {
+      description: "Scroll by dy (positive = down) and optional dx, over a ref, label or x/y (else where the cursor is). Refs expire after scrolling; desktop_read again.",
+      inputSchema: { ...target, dy: z.number(), dx: z.number().optional() }
+    },
+    async (args) => {
+      await desktop.scroll(args);
+      return text(`scrolled dy=${args.dy}${args.dx ? ` dx=${args.dx}` : ""}`);
+    }
+  );
+  server.registerTool(
+    "desktop_screenshot",
+    {
+      description: "Screenshot one app window (or the area around a ref), downscaled. Use only when desktop_read text is not enough: canvases, images, custom-drawn UI. The reply explains how to turn image pixels into screen x/y for desktop_click.",
+      inputSchema: {
+        app: z.string().optional(),
+        ref: z.string().optional(),
+        maxWidth: z.number().int().min(200).max(2e3).optional()
+      }
+    },
+    async (args) => {
+      const shot = await desktop.screenshot(args);
+      return {
+        content: [
+          { type: "image", data: shot.data, mimeType: shot.mimeType },
+          { type: "text", text: shot.note }
+        ]
+      };
+    }
+  );
+}
+
+// src/server/tools.ts
+import { z as z2 } from "zod";
+function text2(body) {
+  return { content: [{ type: "text", text: body }] };
+}
+function registerTools(server, action) {
+  server.registerTool(
     "read_page",
     {
       description: "Read the current page: interactive elements with stable [ref] handles, their roles/names and on-screen rectangles, plus visible text. Call before clicking or typing by ref.",
       inputSchema: {
-        maxElements: z.number().int().min(1).max(200).optional(),
-        includeText: z.boolean().optional()
+        maxElements: z2.number().int().min(1).max(200).optional(),
+        includeText: z2.boolean().optional()
       }
     },
     async ({ maxElements, includeText }) => {
-      const snap = await action2.readPage(maxElements ?? 60, includeText ?? true);
-      return text(formatSnapshot(snap));
+      const snap = await action.readPage(maxElements ?? 60, includeText ?? true);
+      return text2(formatSnapshot(snap));
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "find",
     {
       description: "Identification: locate on-screen elements by their visible text or accessible name (shadow-DOM aware), the way a human scans a page. Returns ranked matches with [ref], role, and on-screen rect. Use when you don't already have a ref, then click/move_to/hover by [ref] \u2014 or use click_text to do it in one step.",
       inputSchema: {
-        text: z.string(),
-        maxResults: z.number().int().min(1).max(20).optional()
+        text: z2.string(),
+        maxResults: z2.number().int().min(1).max(20).optional()
       }
     },
     async ({ text: query, maxResults }) => {
-      const matches = await action2.find(query, { maxResults });
-      if (!matches.length) return text(`No elements matching "${query}".`);
-      return text(matches.map(formatElement).join("\n"));
+      const matches = await action.find(query, { maxResults });
+      if (!matches.length) return text2(`No elements matching "${query}".`);
+      return text2(matches.map(formatElement2).join("\n"));
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "click_text",
     {
       description: "Identification + interaction in one step: find the element that best matches the given text/label, then human-move the cursor to it and click. Re-reads the page if the element isn't there yet. `nth` picks a later match, `stealth:true` delivers trusted events, `double` double-clicks.",
       inputSchema: {
-        text: z.string(),
-        nth: z.number().int().min(0).optional(),
-        double: z.boolean().optional(),
-        stealth: z.boolean().optional()
+        text: z2.string(),
+        nth: z2.number().int().min(0).optional(),
+        double: z2.boolean().optional(),
+        stealth: z2.boolean().optional()
       }
     },
     async ({ text: query, nth, double, stealth }) => {
-      const { matched, point } = await action2.clickText(query, { nth, double, stealth });
-      return text(
+      const { matched, point } = await action.clickText(query, { nth, double, stealth });
+      return text2(
         `clicked "${matched.name || matched.ref}" [${matched.ref}] at (${point.x.toFixed(0)}, ${point.y.toFixed(0)})`
       );
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "move_to",
     {
       description: "Move the cursor to an element ([ref] from read_page) or to absolute viewport x/y along a human-like path. Does not click. stealth:true delivers trusted events via the debugger driver.",
       inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        stealth: z.boolean().optional()
+        ref: z2.string().optional(),
+        x: z2.number().optional(),
+        y: z2.number().optional(),
+        stealth: z2.boolean().optional()
       }
     },
     async (args) => {
-      const p = await action2.moveTo(args);
-      return text(`moved to (${p.x.toFixed(0)}, ${p.y.toFixed(0)})`);
+      const p = await action.moveTo(args);
+      return text2(`moved to (${p.x.toFixed(0)}, ${p.y.toFixed(0)})`);
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "click",
     {
       description: "Human-like move + click on an element ([ref]) or x/y. Supports button, double-click, and stealth (trusted-event) mode.",
       inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        button: z.enum(["left", "right", "middle"]).optional(),
-        double: z.boolean().optional(),
-        stealth: z.boolean().optional()
+        ref: z2.string().optional(),
+        x: z2.number().optional(),
+        y: z2.number().optional(),
+        button: z2.enum(["left", "right", "middle"]).optional(),
+        double: z2.boolean().optional(),
+        stealth: z2.boolean().optional()
       }
     },
     async (args) => {
-      const p = await action2.click(args);
+      const p = await action.click(args);
       const where = args.ref ? `'${args.ref}'` : `(${p.x.toFixed(0)}, ${p.y.toFixed(0)})`;
-      return text(`clicked ${where}`);
+      return text2(`clicked ${where}`);
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "type",
     {
       description: "Type text with human key timing. If a ref is given, the input is human-clicked to focus first. stealth:true uses the debugger driver.",
       inputSchema: {
-        text: z.string(),
-        ref: z.string().optional(),
-        stealth: z.boolean().optional()
+        text: z2.string(),
+        ref: z2.string().optional(),
+        stealth: z2.boolean().optional()
       }
     },
     async (args) => {
-      await action2.type(args);
-      return text(`typed ${args.text.length} chars`);
+      await action.type(args);
+      return text2(`typed ${args.text.length} chars`);
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "press_key",
     {
       description: "Press a single key on the focused element: Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space, or a single character. Use to submit (Enter), dismiss dialogs (Escape), or tab between fields. stealth:true delivers a trusted key event via the debugger driver.",
       inputSchema: {
-        key: z.string(),
-        stealth: z.boolean().optional()
+        key: z2.string(),
+        stealth: z2.boolean().optional()
       }
     },
     async ({ key, stealth }) => {
-      await action2.pressKey(key, stealth);
-      return text(`pressed ${key}`);
+      await action.pressKey(key, stealth);
+      return text2(`pressed ${key}`);
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "scroll",
     {
       description: "Scroll the page by dy (and optional dx) pixels in eased human steps.",
       inputSchema: {
-        dy: z.number(),
-        dx: z.number().optional(),
-        stealth: z.boolean().optional()
+        dy: z2.number(),
+        dx: z2.number().optional(),
+        stealth: z2.boolean().optional()
       }
     },
     async (args) => {
-      await action2.scroll(args);
-      return text(`scrolled dy=${args.dy}`);
+      await action.scroll(args);
+      return text2(`scrolled dy=${args.dy}`);
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "navigate",
     {
       description: "Navigate the active tab to a URL.",
-      inputSchema: { url: z.string() }
+      inputSchema: { url: z2.string() }
     },
     async ({ url }) => {
-      await action2.navigate(url);
-      return text(`navigating to ${url}`);
+      await action.navigate(url);
+      return text2(`navigating to ${url}`);
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "get_url",
     { description: "Return the active tab's current URL.", inputSchema: {} },
-    async () => text(await action2.getUrl())
+    async () => text2(await action.getUrl())
   );
-  server2.registerTool(
+  server.registerTool(
     "wait_for",
     {
       description: "Wait until an element [ref] appears or some visible text is present (or specific condition), up to timeoutMs (default 10000). Supports condition: 'exists' | 'visible' | 'text'. Use in testing and automation flows for resilience on dynamic sites.",
       inputSchema: {
-        ref: z.string().optional(),
-        text: z.string().optional(),
-        timeoutMs: z.number().int().optional(),
-        condition: z.enum(["exists", "visible", "text"]).optional()
+        ref: z2.string().optional(),
+        text: z2.string().optional(),
+        timeoutMs: z2.number().int().optional(),
+        condition: z2.enum(["exists", "visible", "text"]).optional()
       }
     },
     async (args) => {
-      const ok = await action2.waitFor(args);
-      return text(ok ? "found" : "timed out");
+      const ok = await action.waitFor(args);
+      return text2(ok ? "found" : "timed out");
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "screenshot",
     {
       description: "Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate. SEE the page, then click(x,y)/move_to(x,y) at coordinates read off the image. This is the vision loop (screenshot -> decide coords -> click -> screenshot) and needs no DOM refs.",
       inputSchema: {
-        format: z.enum(["png", "jpeg"]).optional()
+        format: z2.enum(["png", "jpeg"]).optional()
       }
     },
     async ({ format }) => {
-      const dataUrl = await action2.screenshot(format ?? "png");
+      const dataUrl = await action.screenshot(format ?? "png");
       const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(dataUrl);
-      if (!m) return text(dataUrl);
+      if (!m) return text2(dataUrl);
       return { content: [{ type: "image", data: m[2], mimeType: m[1] }] };
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "hover",
     {
       description: "Human-like move the cursor to an element or coordinates and fire hover events (mouseover, mouseenter). Essential for dropdowns, tooltips, navigation menus, and realistic workflow/testing automation.",
       inputSchema: {
-        ref: z.string().optional(),
-        x: z.number().optional(),
-        y: z.number().optional(),
-        stealth: z.boolean().optional()
+        ref: z2.string().optional(),
+        x: z2.number().optional(),
+        y: z2.number().optional(),
+        stealth: z2.boolean().optional()
       }
     },
     async (args) => {
-      await action2.hover(args);
+      await action.hover(args);
       const where = args.ref ? `'${args.ref}'` : args.x != null ? `(${args.x},${args.y})` : "current position";
-      return text(`hovered ${where}`);
+      return text2(`hovered ${where}`);
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "status",
     {
       description: "Return current MCP server status, driver in use (extension or os), whether the browser bridge is connected, and the active tab URL if available. Use for health checks in long-running tests, CI workflows, and agent monitoring.",
       inputSchema: {}
     },
     async () => {
-      const url = await action2.getUrl().catch(() => null);
+      const url = await action.getUrl().catch(() => null);
       const connected = url !== null;
-      const p = action2.personaInfo();
+      const p = action.personaInfo();
       const t = p.traits;
-      return text(
+      return text2(
         [
           `driver: ${process.env.AGENTCURSOR_DRIVER ?? "extension"}`,
           `bridge_connected: ${connected}`,
@@ -1147,32 +1541,32 @@ function registerTools(server2, action2) {
       );
     }
   );
-  server2.registerTool(
+  server.registerTool(
     "drag",
     {
       description: "Perform a human-like drag from one element/ref or coords to another (e.g. for sliders, reordering, canvas drawing). Uses the realistic path engine while holding the mouse button.",
       inputSchema: {
-        fromRef: z.string().optional(),
-        fromX: z.number().optional(),
-        fromY: z.number().optional(),
-        toRef: z.string().optional(),
-        toX: z.number().optional(),
-        toY: z.number().optional(),
-        button: z.enum(["left", "right", "middle"]).optional(),
-        stealth: z.boolean().optional()
+        fromRef: z2.string().optional(),
+        fromX: z2.number().optional(),
+        fromY: z2.number().optional(),
+        toRef: z2.string().optional(),
+        toX: z2.number().optional(),
+        toY: z2.number().optional(),
+        button: z2.enum(["left", "right", "middle"]).optional(),
+        stealth: z2.boolean().optional()
       }
     },
     async (args) => {
-      await action2.drag(
+      await action.drag(
         { ref: args.fromRef, x: args.fromX, y: args.fromY },
         { ref: args.toRef, x: args.toX, y: args.toY },
         args.button ?? "left",
         args.stealth
       );
-      return text("dragged");
+      return text2("dragged");
     }
   );
-  server2.registerPrompt(
+  server.registerPrompt(
     "human-browser-task",
     {
       description: "Guide for performing realistic, human-like browser automation tasks using agentcursor tools. Use this for any non-trivial interaction on real websites."
@@ -1222,39 +1616,525 @@ function formatSnapshot(snap) {
 function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n)}\u2026` : s;
 }
-function formatElement(e) {
+function formatElement2(e) {
   const r = e.rect;
   const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
   const vp = e.inViewport === false ? " off-view" : "";
   return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
 }
 
-// src/index.ts
-var port = Number(process.env.AGENTCURSOR_WS_PORT ?? DEFAULT_WS_PORT);
-var driverKind = (process.env.AGENTCURSOR_DRIVER ?? "extension").toLowerCase();
-var seedEnv = process.env.AGENTCURSOR_SEED;
-var seed = seedEnv && seedEnv.trim() !== "" && Number.isFinite(Number(seedEnv)) ? Number(seedEnv) : void 0;
-var persona = createPersona(seed);
-var wsTransport = new ExtensionTransport(port);
-var driver = driverKind === "os" ? new OsCursorDriver(wsTransport) : new ExtensionDriver(wsTransport);
-var action = new ActionService(driver, persona);
+// src/server/transport.ts
+import { randomUUID } from "crypto";
+import { WebSocket, WebSocketServer } from "ws";
+var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
+var ExtensionTransport = class {
+  wss;
+  socket = null;
+  pending = /* @__PURE__ */ new Map();
+  constructor(port = DEFAULT_WS_PORT) {
+    this.wss = new WebSocketServer({ host: "127.0.0.1", port });
+    this.wss.on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        process.stderr.write(
+          `agentcursor: port ${port} is already in use. Set AGENTCURSOR_WS_PORT to a free port.
+`
+        );
+        process.exit(1);
+      }
+      process.stderr.write(`agentcursor: WebSocket server error: ${err.message}
+`);
+    });
+    this.wss.on("connection", (ws, req) => {
+      const origin = req.headers.origin;
+      if (origin && !origin.startsWith("chrome-extension://")) {
+        ws.close(1008, "origin not allowed");
+        return;
+      }
+      this.socket = ws;
+      ws.on("message", (data) => this.onMessage(data.toString()));
+      ws.on("close", () => {
+        if (this.socket === ws) this.socket = null;
+      });
+      ws.on("error", () => void 0);
+    });
+  }
+  get connected() {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+  send(command2, timeoutMs = 3e4) {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(NOT_CONNECTED));
+    }
+    const id = randomUUID();
+    const envelope = { v: PROTOCOL_VERSION, id, command: command2 };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Command '${command2.kind}' timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      socket.send(JSON.stringify(envelope));
+    });
+  }
+  onMessage(raw) {
+    let result;
+    try {
+      result = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const entry = this.pending.get(result.id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.pending.delete(result.id);
+    if (result.ok) entry.resolve(result.data);
+    else entry.reject(new Error(result.error));
+  }
+  close() {
+    for (const entry of this.pending.values()) clearTimeout(entry.timer);
+    this.pending.clear();
+    this.wss.close();
+  }
+};
+
+// src/server/create.ts
+var SELF = fileURLToPath2(import.meta.url);
+var BUILD_ID = Math.round(statSync(SELF).mtimeMs);
 function readVersion() {
   try {
-    return JSON.parse(
-      readFileSync(new URL("../package.json", import.meta.url), "utf8")
-    ).version;
+    return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
   } catch {
     return "0.0.0";
   }
 }
-var server = new McpServer({ name: "agentcursor", version: readVersion() });
-registerTools(server, action);
-await server.connect(new StdioServerTransport());
-process.stderr.write(
-  `agentcursor: MCP ready (stdio, ${driverKind} driver); extension WebSocket on ws://127.0.0.1:${port}
+function resolvePorts(env = process.env) {
+  const ws = Number(env.AGENTCURSOR_WS_PORT ?? DEFAULT_WS_PORT);
+  return { ws, http: Number(env.AGENTCURSOR_HTTP_PORT ?? ws + 1) };
+}
+function createRuntime(ports2) {
+  const seedEnv = process.env.AGENTCURSOR_SEED;
+  const seed = seedEnv && seedEnv.trim() !== "" && Number.isFinite(Number(seedEnv)) ? Number(seedEnv) : void 0;
+  const persona = createPersona(seed);
+  const extension = new ExtensionTransport(ports2.ws);
+  const driver = (process.env.AGENTCURSOR_DRIVER ?? "extension").toLowerCase() === "os" ? new OsCursorDriver(extension) : new ExtensionDriver(extension);
+  return {
+    action: new ActionService(driver, persona),
+    desktop: new DesktopService(persona),
+    extension,
+    persona,
+    ports: ports2
+  };
+}
+function createMcpServer(rt) {
+  const tools = (process.env.AGENTCURSOR_TOOLS ?? "all").toLowerCase();
+  const browser = tools !== "desktop";
+  const desktop = tools !== "browser" && process.platform === "darwin";
+  const server = new McpServer(
+    { name: "agentcursor", version: readVersion() },
+    { instructions: instructions(rt.ports, browser, desktop) }
+  );
+  if (browser) registerTools(server, rt.action);
+  if (desktop) registerDesktopTools(server, rt.desktop);
+  return server;
+}
+function instructions(ports2, browser, desktop) {
+  return [
+    "AgentCursor moves a visible, human-like cursor for you.",
+    desktop && "Any Mac app: desktop_open, then desktop_read (compact text with [dN] refs, far cheaper than screenshots), then desktop_click / desktop_type / desktop_key. Use desktop_screenshot only when the text is not enough.",
+    browser && "Browser tabs (needs the Chrome extension): read_page, then click / type by [ref], or click_text.",
+    `If a tool reports missing permissions or a disconnected extension, send the user to http://127.0.0.1:${ports2.http} to finish setup.`
+  ].filter(Boolean).join("\n");
+}
+var logFile = (port) => join2(tmpdir2(), `agentcursor-${port}.log`);
+
+// src/server/http.ts
+import { createServer } from "http";
+import { fileURLToPath as fileURLToPath3 } from "url";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+
+// src/setup/clients.ts
+import { spawnSync } from "child_process";
+import { copyFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "fs";
+import { homedir } from "os";
+import { delimiter, dirname, join as join3 } from "path";
+var SERVER_NAME = "agentcursor";
+function launchEntry(self) {
+  if (self.includes(join3("_npx", ""))) {
+    return { command: join3(dirname(process.execPath), "npx"), args: ["-y", "agentcursor"] };
+  }
+  return { command: process.execPath, args: [self] };
+}
+var toolPath = () => [
+  process.env.PATH,
+  dirname(process.execPath),
+  join3(homedir(), ".local", "bin"),
+  "/opt/homebrew/bin",
+  "/usr/local/bin"
+].filter(Boolean).join(delimiter);
+function which(bin) {
+  const r = spawnSync(process.platform === "win32" ? "where" : "which", [bin], {
+    env: { ...process.env, PATH: toolPath() }
+  });
+  return r.status === 0;
+}
+function readJson(path) {
+  try {
+    return JSON.parse(readFileSync2(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function writeJsonEntry(path, key, value) {
+  let config = {};
+  if (existsSync2(path)) {
+    const raw = readFileSync2(path, "utf8");
+    try {
+      config = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error(
+        `${path} is not plain JSON (it may contain comments). Add this by hand:
+${JSON.stringify({ [key]: { [SERVER_NAME]: value } }, null, 2)}`
+      );
+    }
+    copyFileSync(path, `${path}.bak`);
+  } else {
+    mkdirSync(dirname(path), { recursive: true });
+  }
+  config[key] = { ...config[key] ?? {}, [SERVER_NAME]: value };
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}
+`);
+  return `added to ${path} (backup at .bak); restart the app to load it`;
+}
+function jsonClient(id, name, dir, file, key, shape = (e) => e) {
+  const path = join3(dir, file);
+  return {
+    id,
+    name,
+    detect: () => existsSync2(dir),
+    configured: () => Boolean(readJson(path)?.[key]?.[SERVER_NAME]),
+    connect: (entry) => writeJsonEntry(path, key, shape(entry))
+  };
+}
+function cliClient(id, name, bin, addArgs, configured) {
+  return {
+    id,
+    name,
+    detect: () => which(bin),
+    configured,
+    connect: (entry) => {
+      const args = addArgs(entry);
+      const r = spawnSync(bin, args, { encoding: "utf8", env: { ...process.env, PATH: toolPath() } });
+      if (r.status !== 0) throw new Error((r.stderr || r.stdout || `${bin} exited ${r.status}`).trim());
+      return `added with \`${bin} ${args.slice(0, 4).join(" ")} ...\`; start a new session to load it`;
+    }
+  };
+}
+function appDataDir(home, ...parts) {
+  if (process.platform === "darwin") return join3(home, "Library", "Application Support", ...parts);
+  if (process.platform === "win32") return join3(process.env.APPDATA ?? join3(home, "AppData", "Roaming"), ...parts);
+  return join3(home, ".config", ...parts);
+}
+function clients(home = homedir()) {
+  return [
+    cliClient(
+      "claude-code",
+      "Claude Code",
+      "claude",
+      (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, "--", e.command, ...e.args],
+      () => Boolean(readJson(join3(home, ".claude.json"))?.mcpServers?.[SERVER_NAME])
+    ),
+    jsonClient("cursor", "Cursor", join3(home, ".cursor"), "mcp.json", "mcpServers"),
+    jsonClient("vscode", "VS Code", appDataDir(home, "Code", "User"), "mcp.json", "servers", (e) => ({ type: "stdio", ...e })),
+    cliClient(
+      "codex",
+      "Codex",
+      "codex",
+      (e) => ["mcp", "add", SERVER_NAME, "--", e.command, ...e.args],
+      () => {
+        try {
+          return /^\[mcp_servers\.agentcursor\]/m.test(readFileSync2(join3(home, ".codex", "config.toml"), "utf8"));
+        } catch {
+          return false;
+        }
+      }
+    ),
+    jsonClient("windsurf", "Windsurf", join3(home, ".codeium", "windsurf"), "mcp_config.json", "mcpServers"),
+    jsonClient("claude-desktop", "Claude Desktop", appDataDir(home, "Claude"), "claude_desktop_config.json", "mcpServers"),
+    cliClient(
+      "gemini",
+      "Gemini CLI",
+      "gemini",
+      (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, e.command, ...e.args],
+      () => Boolean(readJson(join3(home, ".gemini", "settings.json"))?.mcpServers?.[SERVER_NAME])
+    )
+  ];
+}
+function clientStatus(home = homedir()) {
+  return clients(home).map((c) => ({ id: c.id, name: c.name, detected: c.detect(), configured: c.configured() }));
+}
+function connectClient(id, entry, home = homedir()) {
+  const client = clients(home).find((c) => c.id === id);
+  if (!client) throw new Error(`Unknown client "${id}"`);
+  return client.connect(entry);
+}
+
+// src/setup/wizard.html
+var wizard_default = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>AgentCursor Setup</title>\n<style>\n  :root {\n    --bg: #070707; --panel: #101010; --line: #1f1f1f; --line-strong: #2c2c2c;\n    --text: #f2f2f2; --muted: #8a8a8a; --dim: #555; --ok: #f2f2f2; --warn: #bdbdbd;\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", sans-serif;\n    background-image: radial-gradient(1200px 500px at 50% -200px, #1c1c1c 0%, transparent 70%);\n    min-height: 100vh;\n  }\n  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 80px; }\n  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }\n  .brand { display: flex; align-items: center; gap: 12px; }\n  .brand svg { width: 26px; height: 26px; }\n  .brand h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }\n  .pill { font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); border: 1px solid var(--line-strong); padding: 6px 10px; border-radius: 6px; }\n  .lead { color: var(--muted); margin: -12px 0 28px; max-width: 560px; }\n  .progress { height: 2px; background: var(--line); border-radius: 2px; overflow: hidden; margin-bottom: 28px; }\n  .progress > div { height: 100%; background: linear-gradient(90deg, #6d6d6d, #fff); transition: width .4s ease; }\n  section { background: linear-gradient(180deg, #121212, var(--panel)); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }\n  section h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }\n  section h2 .n { font: 11px/1 ui-monospace, Menlo, monospace; color: var(--dim); border: 1px solid var(--line-strong); border-radius: 4px; padding: 3px 5px; }\n  section > p { color: var(--muted); margin: 0 0 14px; }\n  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }\n  .row:first-of-type { border-top: 0; }\n  .row .label { display: flex; align-items: center; gap: 10px; min-width: 0; }\n  .row .sub { color: var(--dim); font-size: 12px; }\n  .mark { width: 16px; height: 16px; border: 1px solid var(--line-strong); border-radius: 4px; display: inline-grid; place-items: center; flex: none; font-size: 11px; color: var(--bg); }\n  .mark.on { background: var(--ok); border-color: var(--ok); }\n  .mark.on::after { content: "\u2713"; font-weight: 700; }\n  .state { color: var(--muted); font-size: 12px; }\n  button {\n    font: inherit; font-size: 13px; color: var(--bg); background: var(--text); border: 0; border-radius: 7px;\n    padding: 7px 12px; cursor: pointer; white-space: nowrap; box-shadow: inset 0 1px 0 rgba(255,255,255,.5);\n  }\n  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line-strong); box-shadow: none; }\n  button:disabled { opacity: .45; cursor: default; }\n  button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }\n  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }\n  code, pre { font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }\n  pre { background: #0a0a0a; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0 0; color: #cfcfcf; white-space: pre-wrap; word-break: break-all; }\n  .prompt { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; color: #d9d9d9; }\n  ol { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }\n  ol li { margin: 4px 0; }\n  details { margin-top: 12px; color: var(--muted); }\n  summary { cursor: pointer; }\n  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #fff; color: #000; padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: calc(100vw - 32px); opacity: 0; transition: opacity .2s; pointer-events: none; }\n  .toast.show { opacity: 1; }\n  .hidden { display: none; }\n  @media (max-width: 520px) { .row { flex-wrap: wrap; } }\n</style>\n</head>\n<body>\n<main>\n  <header>\n    <div class="brand">\n      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 3l15 7.2-6.4 1.6L9.4 18 4 3z" fill="#fff"/><path d="M13 12.2l5.5 6.3" stroke="#8a8a8a" stroke-width="1.6" stroke-linecap="round"/></svg>\n      <h1>AgentCursor</h1>\n    </div>\n    <span class="pill" id="service">connecting\u2026</span>\n  </header>\n  <p class="lead">A visible, human-like cursor your AI can use in any Mac app and in your browser. Finish the steps below once; every connected AI app shares this local service.</p>\n  <div class="progress" aria-hidden="true"><div id="bar" style="width:0%"></div></div>\n\n  <section>\n    <h2><span class="n">1</span> Connect your AI apps</h2>\n    <p>Adds AgentCursor to each app\'s MCP settings. Restart or reload the app afterwards.</p>\n    <div id="clients"></div>\n    <div class="actions"><button id="connect-all">Connect all detected</button></div>\n    <details>\n      <summary>Another app? Add it by hand</summary>\n      <pre id="manual"></pre>\n    </details>\n  </section>\n\n  <section id="desktop-section">\n    <h2><span class="n">2</span> Control any Mac app</h2>\n    <p>macOS asks you to allow this once. Grant it to the app your AI runs in (Terminal, Cursor, Claude...), then come back here.</p>\n    <div class="row"><div class="label"><span class="mark" id="ax-mark"></span><div>Accessibility<div class="sub">Read app windows and move the cursor</div></div></div><button class="ghost" id="ax-btn">Allow</button></div>\n    <div class="row"><div class="label"><span class="mark" id="sr-mark"></span><div>Screen Recording<div class="sub">Only for desktop_screenshot</div></div></div><button class="ghost" id="sr-btn">Allow</button></div>\n    <div class="actions"><button id="wiggle">Test the cursor</button></div>\n  </section>\n\n  <section>\n    <h2><span class="n">3</span> Browser tabs <span class="state">optional</span></h2>\n    <p>For web pages, load the Chrome extension once. Desktop control works without it.</p>\n    <div class="row"><div class="label"><span class="mark" id="ext-mark"></span><div>Chrome extension<div class="sub" id="ext-sub"></div></div></div><button class="ghost" id="ext-copy">Copy folder path</button></div>\n    <ol id="ext-steps">\n      <li>Open <code>chrome://extensions</code> and turn on Developer mode.</li>\n      <li>Click Load unpacked and pick the folder path you copied.</li>\n      <li>Open any normal web page. This turns green on its own.</li>\n    </ol>\n  </section>\n\n  <section>\n    <h2><span class="n">4</span> Try it</h2>\n    <p>Paste one of these into your AI app.</p>\n    <div id="prompts"></div>\n  </section>\n\n  <details>\n    <summary>Details</summary>\n    <pre id="details"></pre>\n  </details>\n</main>\n<div class="toast" id="toast" role="status" aria-live="polite"></div>\n\n<script>\n  const $ = (id) => document.getElementById(id);\n  const esc = (s) => String(s).replace(/[&<>"\']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", \'"\': "&quot;", "\'": "&#39;" })[c]);\n  let state = null;\n\n  const PROMPTS = [\n    "Use agentcursor: open Notes, create a new note and write a 3 item shopping list.",\n    "Use agentcursor: open Finder, go to Downloads and tell me the three newest files.",\n    "Use agentcursor: in my browser, open news.ycombinator.com and click the top story.",\n  ];\n\n  function toast(msg) {\n    const t = $("toast");\n    t.textContent = msg;\n    t.classList.add("show");\n    clearTimeout(toast.timer);\n    toast.timer = setTimeout(() => t.classList.remove("show"), 4000);\n  }\n\n  async function api(path, body) {\n    const res = await fetch(path, body === undefined ? {} : {\n      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),\n    });\n    const data = await res.json();\n    if (!res.ok) throw new Error(data.error || res.statusText);\n    return data;\n  }\n\n  async function busy(button, fn) {\n    button.disabled = true;\n    try { await fn(); } catch (e) { toast(e.message); } finally { button.disabled = false; refresh(); }\n  }\n\n  async function copy(text, label) {\n    try { await navigator.clipboard.writeText(text); toast(`${label} copied`); } catch { toast(text); }\n  }\n\n  function render(s) {\n    state = s;\n    $("service").textContent = `running \xB7 v${s.version}`;\n\n    const detected = s.clients.filter((c) => c.detected);\n    $("clients").innerHTML = s.clients.map((c) => `\n      <div class="row">\n        <div class="label"><span class="mark ${c.configured ? "on" : ""}"></span><div>${esc(c.name)}<div class="sub">${c.configured ? "Connected" : c.detected ? "Installed, not connected" : "Not found on this machine"}</div></div></div>\n        ${c.detected && !c.configured ? `<button class="ghost" data-client="${esc(c.id)}">Connect</button>` : ""}\n      </div>`).join("");\n    $("connect-all").disabled = !detected.some((c) => !c.configured);\n    $("manual").textContent = JSON.stringify({ mcpServers: { agentcursor: s.stdio } }, null, 2) + `\\n\\nHTTP transport: ${s.mcpUrl}`;\n\n    const d = s.desktop;\n    $("desktop-section").classList.toggle("hidden", !d.supported);\n    $("ax-mark").classList.toggle("on", d.accessibility);\n    $("sr-mark").classList.toggle("on", d.screenRecording);\n    $("ax-btn").classList.toggle("hidden", d.accessibility);\n    $("sr-btn").classList.toggle("hidden", d.screenRecording);\n    $("wiggle").disabled = !d.accessibility;\n\n    $("ext-mark").classList.toggle("on", s.extension.connected);\n    $("ext-sub").textContent = s.extension.connected ? "Connected" : s.extension.path;\n    $("ext-steps").classList.toggle("hidden", s.extension.connected);\n\n    const steps = [detected.some((c) => c.configured), !d.supported || d.accessibility, !d.supported || d.screenRecording, s.extension.connected];\n    $("bar").style.width = `${Math.round((steps.filter(Boolean).length / steps.length) * 100)}%`;\n\n    $("details").textContent = [\n      `MCP (HTTP): ${s.mcpUrl}`,\n      `MCP (stdio): ${s.stdio.command} ${s.stdio.args.join(" ")}`,\n      `Extension WebSocket: ws://127.0.0.1:${s.extension.wsPort}`,\n      `Persona seed: ${s.personaSeed}`,\n      `Service pid: ${s.pid}`,\n      `Log: ${s.logFile}`,\n    ].join("\\n");\n  }\n\n  async function refresh() {\n    try { render(await api("/api/status")); }\n    catch { $("service").textContent = "service not running: run agentcursor setup"; }\n  }\n\n  $("clients").addEventListener("click", (e) => {\n    const b = e.target.closest("button[data-client]");\n    if (b) busy(b, async () => toast((await api("/api/connect", { client: b.dataset.client })).message));\n  });\n  $("connect-all").addEventListener("click", (e) => busy(e.currentTarget, async () => {\n    const pending = state.clients.filter((c) => c.detected && !c.configured);\n    const results = [];\n    for (const c of pending) {\n      try { await api("/api/connect", { client: c.id }); results.push(`${c.name} connected`); }\n      catch (err) { results.push(`${c.name}: ${err.message}`); }\n    }\n    toast(results.join(" \xB7 "));\n  }));\n  $("ax-btn").addEventListener("click", (e) => busy(e.currentTarget, () => api("/api/permission", { kind: "accessibility" })));\n  $("sr-btn").addEventListener("click", (e) => busy(e.currentTarget, () => api("/api/permission", { kind: "screen" })));\n  $("wiggle").addEventListener("click", (e) => busy(e.currentTarget, async () => { await api("/api/test-cursor", {}); toast("That was AgentCursor moving your cursor"); }));\n  $("ext-copy").addEventListener("click", () => state && copy(state.extension.path, "Extension folder path"));\n\n  $("prompts").innerHTML = PROMPTS.map((p, i) => `<div class="prompt"><span>${esc(p)}</span><button class="ghost" data-prompt="${i}">Copy</button></div>`).join("");\n  $("prompts").addEventListener("click", (e) => {\n    const b = e.target.closest("button[data-prompt]");\n    if (b) copy(PROMPTS[Number(b.dataset.prompt)], "Prompt");\n  });\n\n  refresh();\n  setInterval(refresh, 2000);\n</script>\n</body>\n</html>\n';
+
+// src/server/guard.ts
+function isAllowedRequest(host, origin, port) {
+  const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+  if (!host || !hosts.includes(host)) return false;
+  return origin === void 0 || hosts.some((h) => origin === `http://${h}`);
+}
+
+// src/server/http.ts
+function serve(rt, opts = {}) {
+  const port = rt.ports.http;
+  let lastSeen = Date.now();
+  const server = createServer(async (req, res) => {
+    lastSeen = Date.now();
+    if (!isAllowedRequest(req.headers.host, req.headers.origin, port)) {
+      return json(res, 403, { error: "Only local requests from this machine are allowed." });
+    }
+    const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    try {
+      if (path === "/mcp") return await handleMcp(rt, req, res);
+      if (req.method === "GET") {
+        if (path === "/") {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+          return res.end(wizard_default);
+        }
+        if (path === "/health") return json(res, 200, health());
+        if (path === "/api/status") return json(res, 200, await status(rt));
+      }
+      if (req.method === "POST") {
+        const body = await readBody(req);
+        if (path === "/api/connect") {
+          return json(res, 200, { message: connectClient(String(body.client), launchEntry(SELF)) });
+        }
+        if (path === "/api/permission") {
+          return json(res, 200, await rt.desktop.requestPermission(body.kind === "screen" ? "screen" : "accessibility"));
+        }
+        if (path === "/api/test-cursor") {
+          await rt.desktop.wiggle();
+          return json(res, 200, { ok: true });
+        }
+        if (path === "/shutdown") {
+          json(res, 200, { ok: true });
+          setTimeout(() => process.exit(0), 50);
+          return;
+        }
+      }
+      json(res, 404, { error: "Not found" });
+    } catch (e) {
+      if (!res.headersSent) json(res, 500, { error: e.message });
+    }
+  });
+  if (opts.idleExitMs) {
+    const idle = opts.idleExitMs;
+    setInterval(() => {
+      if (Date.now() - lastSeen > idle) process.exit(0);
+    }, 15e3).unref();
+  }
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      process.stderr.write(
+        `agentcursor: serving MCP at http://127.0.0.1:${port}/mcp, setup page http://127.0.0.1:${port}, extension WebSocket ws://127.0.0.1:${rt.ports.ws}, persona seed ${rt.persona.seed}
 `
-);
-process.stderr.write(
-  `agentcursor: persona seed ${persona.seed} (set AGENTCURSOR_SEED=${persona.seed} to reproduce this person)
-`
-);
+      );
+      resolve();
+    });
+  });
+}
+async function handleMcp(rt, req, res) {
+  if (req.method !== "POST") {
+    return json(res, 405, { jsonrpc: "2.0", error: { code: -32e3, message: "Method not allowed." }, id: null });
+  }
+  const server = createMcpServer(rt);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: void 0, enableJsonResponse: true });
+  res.on("close", () => {
+    void transport.close();
+    void server.close();
+  });
+  await server.connect(transport);
+  await transport.handleRequest(req, res);
+}
+function health() {
+  return { ok: true, version: readVersion(), buildId: BUILD_ID, pid: process.pid };
+}
+async function status(rt) {
+  const supported = desktopSupported();
+  const permissions = supported ? await rt.desktop.permissions().catch(() => null) : null;
+  return {
+    ...health(),
+    platform: process.platform,
+    mcpUrl: `http://127.0.0.1:${rt.ports.http}/mcp`,
+    stdio: launchEntry(SELF),
+    logFile: logFile(rt.ports.http),
+    personaSeed: rt.persona.seed,
+    extension: {
+      connected: rt.extension.connected,
+      wsPort: rt.ports.ws,
+      path: fileURLToPath3(new URL("../extension", import.meta.url))
+    },
+    desktop: {
+      supported,
+      accessibility: permissions?.accessibility ?? false,
+      screenRecording: permissions?.screenRecording ?? false
+    },
+    clients: clientStatus()
+  };
+}
+function json(res, code, body) {
+  res.writeHead(code, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > 65536) req.destroy(new Error("Body too large"));
+    });
+    req.on("end", () => {
+      try {
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+// src/server/proxy.ts
+import { spawn } from "child_process";
+import { openSync } from "fs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListToolsRequestSchema
+} from "@modelcontextprotocol/sdk/types.js";
+var base = (port) => `http://127.0.0.1:${port}`;
+async function health2(port) {
+  try {
+    const res = await fetch(`${base(port)}/health`, { signal: AbortSignal.timeout(1500) });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+async function until(check, timeoutMs) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await check()) return true;
+    await sleep(150);
+  }
+  return false;
+}
+async function ensureDaemon(port) {
+  const current = await health2(port);
+  if (current && current.buildId >= BUILD_ID) return;
+  if (current) {
+    await fetch(`${base(port)}/shutdown`, { method: "POST" }).catch(() => void 0);
+    await until(async () => !await health2(port), 5e3);
+  }
+  const log = openSync(logFile(port), "a");
+  spawn(process.execPath, [SELF, "serve", "--idle-exit"], {
+    detached: true,
+    stdio: ["ignore", log, log],
+    env: process.env
+  }).unref();
+  const ready = await until(async () => ((await health2(port))?.buildId ?? 0) >= BUILD_ID, 15e3);
+  if (!ready) throw new Error(`agentcursor could not start its local service on port ${port}. Log: ${logFile(port)}`);
+}
+async function connect(port) {
+  const client = new Client({ name: "agentcursor-stdio", version: readVersion() });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${base(port)}/mcp`)));
+  return client;
+}
+var unreachable = (e) => {
+  const err = e;
+  return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up/i.test(`${err?.message} ${err?.cause?.code}`);
+};
+async function runStdioProxy(port) {
+  await ensureDaemon(port);
+  let client = await connect(port);
+  const call = async (fn) => {
+    try {
+      return await fn(client);
+    } catch (e) {
+      if (!unreachable(e)) throw e;
+      await ensureDaemon(port);
+      client = await connect(port);
+      return fn(client);
+    }
+  };
+  const server = new Server(
+    { name: "agentcursor", version: readVersion() },
+    { capabilities: { tools: {}, prompts: {} }, instructions: client.getInstructions() }
+  );
+  const long = { timeout: 15 * 6e4 };
+  server.setRequestHandler(ListToolsRequestSchema, (req) => call((c) => c.listTools(req.params)));
+  server.setRequestHandler(CallToolRequestSchema, (req) => call((c) => c.callTool(req.params, void 0, long)));
+  server.setRequestHandler(ListPromptsRequestSchema, (req) => call((c) => c.listPrompts(req.params)));
+  server.setRequestHandler(GetPromptRequestSchema, (req) => call((c) => c.getPrompt(req.params)));
+  await server.connect(new StdioServerTransport());
+  setInterval(() => void health2(port), 6e4).unref();
+}
+
+// src/setup/cli.ts
+import { spawn as spawn2 } from "child_process";
+async function setup(port, argv) {
+  await ensureDaemon(port);
+  const all = argv.includes("--all");
+  const only = argv.find((a) => a.startsWith("--client="))?.slice("--client=".length).split(",");
+  const entry = launchEntry(SELF);
+  console.log("AI apps on this machine:");
+  for (const c of clients()) {
+    if (!c.detect()) continue;
+    let state = c.configured() ? "connected" : "not connected";
+    if (state === "not connected" && (all || only?.includes(c.id))) {
+      try {
+        state = `connected (${c.connect(entry)})`;
+      } catch (e) {
+        state = `failed: ${e.message}`;
+      }
+    }
+    console.log(`  ${c.name.padEnd(15)} ${state}`);
+  }
+  const url = `http://127.0.0.1:${port}`;
+  console.log(`
+Setup page: ${url}`);
+  console.log("Connect everything at once: agentcursor setup --all");
+  if (!argv.includes("--no-open")) openUrl(url);
+}
+function openUrl(url) {
+  const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+  spawn2(cmd, args, { stdio: "ignore", detached: true }).unref();
+}
+
+// src/index.ts
+var [command = "mcp", ...rest] = process.argv.slice(2);
+var ports = resolvePorts();
+if (command === "serve") {
+  await serve(createRuntime(ports), { idleExitMs: rest.includes("--idle-exit") ? 10 * 6e4 : void 0 });
+} else if (command === "setup") {
+  await setup(ports.http, rest);
+  process.exit(0);
+} else if (command === "mcp") {
+  await runStdioProxy(ports.http);
+} else {
+  process.stderr.write(
+    "usage: agentcursor [mcp|serve|setup]\n  mcp    stdio MCP server for AI apps (default)\n  serve  run the local service in the foreground\n  setup  connect your AI apps and open the setup page (--all, --client=cursor,codex, --no-open)\n"
+  );
+  process.exit(1);
+}
