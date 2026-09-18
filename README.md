@@ -1,18 +1,30 @@
 # AgentCursor
 
-**Local, free, human-like cursor for AI agents: any Mac app or browser tab, over MCP.**
+**Computer use that reads windows as text, not screenshots. Any Mac app or browser tab, over MCP.**
 
-AgentCursor gives you (and any coding agent or automation script) a **real browser** driven with **visible, convincingly human cursor movement and timing**.
+![A local 27B model reading a TextEdit window, clicking into it and typing](docs/media/agentcursor-local.gif)
+
+*Above: a 27B model running entirely on the laptop drives TextEdit through AgentCursor. No network, no screenshots.*
+
+Screenshot-based computer use pays 600 to 1,200 tokens every time an agent looks at a window. AgentCursor reads the macOS accessibility tree instead and hands the agent compact text:
+
+```
+TextEdit window "notes.txt" @195,92 656x422
+[d1] textarea value="AGENTCURSOR DEMO SCRATCH FILE" @523,316 focused
+[d2] button "Delete" @845,386
+```
+
+A full window read costs 60 to 130 tokens. Clicking `[d2]` costs about 9. Then the real cursor moves along a curved path and clicks, so you can watch what the agent did.
+
+That gap is what makes local models practical. In the run above, Bonsai 2 27B (ternary, 6.9 GB, on an M3 Pro) finished a read, click, type and verify loop in 6 turns and 180 seconds, with zero network calls. The same loop on screenshots would not fit the budget.
 
 Use it as:
-- A powerful MCP tool for Claude, Cursor, Grok, custom agents, etc.
-- A realistic E2E / acceptance testing tool that works on actual production sites (human paths + timing are more resilient than robotic Playwright clicks).
-- A workflow automation engine for complex multi-step processes (logins, form flows, data entry, admin tasks) with natural hover, move, type, and scroll behavior.
-- A debugging / demo automation tool (the cursor is visible so you can watch exactly what the automation did).
+- An MCP server for Claude Code, Cursor, VS Code, Codex, Windsurf, Claude Desktop and Gemini CLI, connected by one setup command.
+- Desktop control for apps that have no API at all, including Chromium and Electron windows.
+- A browser automation tool with visible, human-paced cursor movement and timing.
+- A debugging and demo tool, because the cursor is visible and you can watch every step.
 
-All local. All free. MIT licensed. No cloud, no paywalled stealth.
-
-The major browser automation MCPs often make realistic movement a cloud-only feature. AgentCursor brings the realistic cursor to your local machine for agents **and** traditional testing/automation use cases.
+All local. All free. MIT licensed. No cloud, no account. Desktop control is macOS only for now; the browser side runs wherever Chrome does.
 
 > Status: phase 1 (Chrome extension) and phase 2 (macOS OS-cursor for genuinely
 > trusted events) are both implemented. See [`docs/DESIGN.md`](docs/DESIGN.md).
