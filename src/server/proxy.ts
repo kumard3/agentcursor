@@ -51,11 +51,19 @@ export async function ensureDaemon(port: number): Promise<void> {
   if (!ready) throw new Error(`agentcursor could not start its local service on port ${port}. Log: ${logFile(port)}`);
 }
 
-async function connect(port: number): Promise<Client> {
+export async function connectClient(port: number): Promise<Client> {
   const client = new Client({ name: "agentcursor-stdio", version: readVersion() });
   await client.connect(new StreamableHTTPClientTransport(new URL(`${base(port)}/mcp`)));
   return client;
 }
+
+type Tool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
+
+const slim = (t: Tool): Tool => {
+  const { $schema, ...schema } = t.inputSchema as Record<string, unknown>;
+  const { execution: _execution, ...rest } = t as Record<string, unknown>;
+  return { ...rest, inputSchema: schema } as Tool;
+};
 
 const unreachable = (e: unknown): boolean => {
   const err = e as { message?: string; cause?: { code?: string } };
@@ -64,7 +72,7 @@ const unreachable = (e: unknown): boolean => {
 
 export async function runStdioProxy(port: number): Promise<void> {
   await ensureDaemon(port);
-  let client = await connect(port);
+  let client = await connectClient(port);
 
   const call = async <T>(fn: (c: Client) => Promise<T>): Promise<T> => {
     try {
@@ -72,7 +80,7 @@ export async function runStdioProxy(port: number): Promise<void> {
     } catch (e) {
       if (!unreachable(e)) throw e;
       await ensureDaemon(port);
-      client = await connect(port);
+      client = await connectClient(port);
       return fn(client);
     }
   };
@@ -82,7 +90,10 @@ export async function runStdioProxy(port: number): Promise<void> {
     { capabilities: { tools: {}, prompts: {} }, instructions: client.getInstructions() },
   );
   const long = { timeout: 15 * 60_000 };
-  server.setRequestHandler(ListToolsRequestSchema, (req) => call((c) => c.listTools(req.params)));
+  server.setRequestHandler(ListToolsRequestSchema, async (req) => {
+    const res = await call((c) => c.listTools(req.params));
+    return { ...res, tools: res.tools.map(slim) };
+  });
   server.setRequestHandler(CallToolRequestSchema, (req) => call((c) => c.callTool(req.params, undefined, long)));
   server.setRequestHandler(ListPromptsRequestSchema, (req) => call((c) => c.listPrompts(req.params)));
   server.setRequestHandler(GetPromptRequestSchema, (req) => call((c) => c.getPrompt(req.params)));

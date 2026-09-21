@@ -33,6 +33,7 @@ How it fits together: every AI app launches `agentcursor` as an ordinary stdio M
 
 ## Changelog (key updates)
 
+- **Unreleased**: E2E testing. `AgentCursor.launch()` starts a private Chrome (throwaway profile, its own copy of the extension on a free port) with its own visible cursor, so tests never touch your mouse, your browser or the MCP server on 8930, and several can run side by side. Works headed or `headless: true`. Computer use reaches the SDK too: `Desktop.open("Notes")` drives any Mac app with the real cursor and text-first reads. New agent CLI: every tool is a shell command (`agentcursor read_page`, `agentcursor desktop_click --text Save`) sharing one background service, so no tool schemas ever enter the model's context. Page reads got ~43% smaller, and the stdio tool list dropped from about 3,178 to 2,735 estimated tokens. New `expect()` with auto-retrying matchers (`toBeVisible`, `toBeHidden`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveURL`, `.not`). `navigate` now waits for the page to load, commands wait briefly for the content script after a navigation, `isVisible()`/`count()` answer immediately instead of waiting 5s, and headless screenshots no longer return the previous frame.
 - **0.4.0**: Desktop control for any Mac app: `desktop_read` returns the window as compact text with `[dN]` refs from the macOS accessibility tree (a small Swift helper), then `desktop_click` / `desktop_type` / `desktop_key` / `desktop_scroll` drive the real cursor and keyboard with the same persona-based human motion. `desktop_screenshot` is a cropped, downscaled fallback. Chromium and Electron apps get their accessibility tree switched on automatically. New onboarding: `agentcursor setup` plus a local setup page that connects seven AI apps, checks permissions and tests the cursor. All AI apps now share one background service (stdio launches proxy to it), which removes the `port 8930 already in use` failure. The extension WebSocket now rejects connections from web pages.
 
 - **0.3.0**: Programmatic SDK — `import { AgentCursor } from "agentcursor"` with a Playwright-shaped locator API (`getByRole`/`getByText`/`getByLabel`/`getByPlaceholder`/`getByTestId`/css + chaining + `filter`/`nth` + `click`/`type`/`fill`/`hover`/`dragTo`/`press`/`scrollIntoView` + `boundingBox`/`isVisible`/`count`/`waitFor`), every action driven by the human cursor. `connect()` and `os()` lifecycles. Library entry split from the MCP bin so importing the package no longer boots a server; built with `tsup` (ships `.d.ts`). Locator resolution uses `@testing-library/dom` in the content script.
@@ -171,9 +172,9 @@ await ac.close();
 ```
 
 **Lifecycles**
+- `AgentCursor.launch({ headless?, args?, executablePath?, seed?, stealth? })`: start a private Chrome with its own cursor. See [E2E tests](#e2e-tests-a-playwright-alternative-with-a-visible-cursor).
 - `AgentCursor.connect({ port?, stealth?, timeoutMs? })` — attach to a running Chrome with the extension loaded (works with your real, logged-in profile).
 - `AgentCursor.os({ stealth?, ... })` — same locator API, but the real OS cursor is moved via nut-js (genuinely trusted events); page sensing still goes through the extension.
-- `launch()` (spawn Chrome for you) is planned for a later release. Stable Chrome dropped `--load-extension` in v137, so launch will target Chrome for Testing.
 
 **Locators** (lazy, chainable, Playwright-shaped)
 - Find: `locator(css)`, `getByRole(role, { name })`, `getByText`, `getByLabel`, `getByPlaceholder`, `getByTestId`.
@@ -186,6 +187,44 @@ Each action resolves the locator in the page (role/label/etc. via `@testing-libr
 A full runnable example is in [`examples/sdk-quickstart.mjs`](examples/sdk-quickstart.mjs); `pnpm smoke:sdk` runs the end-to-end pipeline against a simulated browser.
 
 > Note: in-page (`stealth: false`) events are `isTrusted=false`. Use `stealth: true` (CDP) or `AgentCursor.os()` when you need trusted events.
+
+### 4. CLI for coding agents (`agentcursor <command>`)
+
+Every MCP tool is also a shell command. One background service holds the page, the `[refs]` and the frontmost app, so commands chain like a session, and an agent that uses the CLI loads no tool schemas at all.
+
+```bash
+agentcursor help                        # one line per command (agentcursor tools for full descriptions)
+
+# browser
+agentcursor navigate https://example.com
+agentcursor read_page --includeText false
+agentcursor click_text "Buy now"
+agentcursor find Submit                 # a handful of tokens instead of a whole page
+agentcursor screenshot                  # writes a file, prints the path
+
+# any Mac app (computer use)
+agentcursor desktop_open Notes
+agentcursor desktop_read --max 40       # the window as text, not pixels
+agentcursor desktop_click --text "New Note"
+agentcursor desktop_type "hello" --submit
+```
+
+Positionals fill a command's parameters in the order `agentcursor help` lists them, and anything can be given as `--flag value`. Dashes work too (`click-text`). `AGENTCURSOR_OUT` sets where screenshots are written.
+
+### 5. Computer use from the SDK (`Desktop`)
+
+```ts
+import { Desktop } from "agentcursor";
+
+const d = await Desktop.open("TextEdit");     // seed: 7 for reproducible motion
+console.log(await d.read());                  // window as compact text with [dN] refs
+await d.type("Dear team,", { clear: true });
+await d.click("Save");                        // a [dN] ref or any visible label
+await d.key("cmd+s");
+if (await d.waitForText("Saved")) console.log("done");
+```
+
+`find()` returns only matching elements (tens of tokens), `view()` gives the structured elements, and `screenshot({ path })` is the fallback when the text is not enough. macOS only, and it needs Accessibility permission for whichever app starts it.
 
 ## Tools (MCP)
 
@@ -235,6 +274,45 @@ No extension needed. Grant Accessibility (and Screen Recording, only for screens
 | Arc | ~705 | ~9 | 852 |
 
 The bigger saving is the loop: clicking by ref or label needs no screenshot to find coordinates and none to check where the click landed.
+
+## E2E tests: a Playwright alternative with a visible cursor
+
+`AgentCursor.launch()` opens its own Chrome with its own cursor. Your mouse stays yours, your normal browser and the MCP agent's cursor keep working, and every launch is independent, so two launches give you two cursors (two users in a chat app, a buyer and a seller). Use any runner; this is plain `node:test`:
+
+```ts
+import { test } from "node:test";
+import { AgentCursor, expect } from "agentcursor";
+
+test("checkout", async () => {
+  const ac = await AgentCursor.launch({ seed: 7 }); // headless: true for CI
+  try {
+    await ac.goto("http://localhost:3000");
+    await ac.getByRole("button", { name: "Buy now" }).click();
+    await ac.getByLabel("Email").fill("agent@cursor.dev");
+    await ac.getByRole("button", { name: "Submit" }).click();
+    await expect(ac.getByText("Order placed")).toBeVisible();
+    await expect(ac).toHaveURL(/\/thanks$/);
+  } finally {
+    await ac.close();
+  }
+});
+
+test("two cursors at once", async () => {
+  const [alice, bob] = await Promise.all([
+    AgentCursor.launch({ args: ["--window-position=0,0", "--window-size=760,900"] }),
+    AgentCursor.launch({ args: ["--window-position=780,0", "--window-size=760,900"] }),
+  ]);
+  // alice and bob act in parallel, each with a visible cursor in its own window
+  await Promise.all([alice.close(), bob.close()]);
+});
+```
+
+- `expect(locator)`: `toBeVisible`, `toBeHidden`, `toHaveText` (string or RegExp), `toContainText`, `toHaveCount`, and `expect(ac).toHaveURL`. Each retries until it passes or `{ timeout }` (default 5s) runs out; `.not` inverts.
+- Chrome is found automatically (or `executablePath` / `AGENTCURSOR_CHROME`). The extension is loaded over `--remote-debugging-pipe`, so stable Chrome works.
+- Same `seed` means the same motion and typing, so runs (and recorded demos) are reproducible.
+- Not there yet: multiple tabs per launch, network mocking, traces, and non-Chromium browsers. Default events are `isTrusted=false`; pass `stealth: true` for trusted CDP input.
+
+`pnpm e2e` runs [`test/e2e/showcase.e2e.mjs`](test/e2e/showcase.e2e.mjs) (`HEADLESS=1 pnpm e2e` for CI).
 
 ## Using as a Testing & Workflow Automation Tool
 

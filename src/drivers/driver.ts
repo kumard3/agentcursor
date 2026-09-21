@@ -66,4 +66,5 @@ export interface BrowserDriver {
   drag(args: { samples: CursorSample[]; target: Point; button: MouseButton; mode: DeliveryMode }): Promise<void>;
   pressKey(key: string, mode: DeliveryMode): Promise<void>;
   resolveLocator(spec: LocatorSpec, opts: { timeoutMs: number; scrollIntoView?: boolean }): Promise<LocatorMatch>;
+  evaluate(expression: string): Promise<unknown>;
 }

@@ -108,6 +108,10 @@ export class OsCursorDriver implements BrowserDriver {
     )) as LocatorMatch;
   }
 
+  async evaluate(expression: string): Promise<unknown> {
+    return this.transport.send({ kind: "evaluate", expression }, 60_000);
+  }
+
   async cursorState(): Promise<Point> {
     const nut = await loadNut();
     const pos = await nut.mouse.getPosition();

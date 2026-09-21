@@ -1,11 +1,43 @@
 #!/usr/bin/env node
 
+// src/cli/run.ts
+import { writeFile } from "fs/promises";
+import { tmpdir as tmpdir3 } from "os";
+import { join as join3 } from "path";
+
+// src/server/proxy.ts
+import { spawn } from "child_process";
+import { openSync } from "fs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListToolsRequestSchema
+} from "@modelcontextprotocol/sdk/types.js";
+
+// src/util/timing.ts
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+var sleepUntil = (perfTime) => sleep(perfTime - performance.now());
+var rand = (min, max) => min + Math.random() * (max - min);
+
 // src/server/create.ts
 import { readFileSync, statSync } from "fs";
 import { tmpdir as tmpdir2 } from "os";
 import { join as join2 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// src/protocol/index.ts
+var DEFAULT_WS_PORT = 8930;
+var PROTOCOL_VERSION = 1;
+function buildEvalExpression(fn, args = []) {
+  const argList = args.map((a) => JSON.stringify(a) ?? "undefined").join(",");
+  return `(${fn.trim()})(${argList})`;
+}
 
 // src/path-engine/geometry.ts
 function distance(a, b) {
@@ -356,11 +388,6 @@ function sampleTraits(rng) {
   };
 }
 
-// src/util/timing.ts
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
-var sleepUntil = (perfTime) => sleep(perfTime - performance.now());
-var rand = (min, max) => min + Math.random() * (max - min);
-
 // src/action/service.ts
 var ActionService = class {
   constructor(driver, persona) {
@@ -450,6 +477,9 @@ var ActionService = class {
   }
   getUrl() {
     return this.driver.getUrl();
+  }
+  evaluate(fn, args = []) {
+    return this.driver.evaluate(buildEvalExpression(fn, args));
   }
   async waitFor(opts) {
     await this.idleDrift();
@@ -1068,6 +1098,9 @@ var ExtensionDriver = class {
       opts.timeoutMs + 5e3
     );
   }
+  async evaluate(expression) {
+    return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
+  }
 };
 
 // src/drivers/coord-map.ts
@@ -1154,6 +1187,9 @@ var OsCursorDriver = class {
       opts.timeoutMs + 5e3
     );
   }
+  async evaluate(expression) {
+    return this.transport.send({ kind: "evaluate", expression }, 6e4);
+  }
   async cursorState() {
     const nut = await loadNut();
     const pos = await nut.mouse.getPosition();
@@ -1183,10 +1219,6 @@ var OsCursorDriver = class {
     return this.geom;
   }
 };
-
-// src/protocol/index.ts
-var DEFAULT_WS_PORT = 8930;
-var PROTOCOL_VERSION = 1;
 
 // src/server/desktop-tools.ts
 import { z } from "zod";
@@ -1468,6 +1500,20 @@ function registerTools(server, action) {
     async () => text2(await action.getUrl())
   );
   server.registerTool(
+    "evaluate",
+    {
+      description: "Run a JavaScript function in the active page and return its JSON result. Pass a function source string, e.g. `() => document.title` or `async () => (await fetch('/api/x', { method: 'POST', credentials: 'include' })).status`. Runs in the page realm via CDP, so it uses the page's own cookies/session, awaits promises, and is not blocked by the page CSP. Return value must be JSON-serializable. Use for reads and requests the UI has no button for; the debugger banner shows while it runs.",
+      inputSchema: {
+        function: z2.string(),
+        args: z2.array(z2.any()).optional()
+      }
+    },
+    async ({ function: fn, args }) => {
+      const result = await action.evaluate(fn, args);
+      return text2(typeof result === "string" ? result : JSON.stringify(result, null, 2));
+    }
+  );
+  server.registerTool(
     "wait_for",
     {
       description: "Wait until an element [ref] appears or some visible text is present (or specific condition), up to timeoutMs (default 10000). Supports condition: 'exists' | 'visible' | 'text'. Use in testing and automation flows for resilience on dynamic sites.",
@@ -1597,19 +1643,10 @@ function formatSnapshot(snap) {
   const lines = [
     `URL: ${snap.url}`,
     `Title: ${snap.title}`,
-    `Viewport: ${snap.viewport.width}x${snap.viewport.height} (scroll ${snap.viewport.scrollX},${snap.viewport.scrollY}, dpr ${snap.viewport.devicePixelRatio})`,
+    `Viewport: ${snap.viewport.width}x${snap.viewport.height} scroll ${snap.viewport.scrollX},${snap.viewport.scrollY} (element @x,y = center)`,
     `Elements (${snap.elements.length}):`
   ];
-  for (const e of snap.elements) {
-    const r = e.rect;
-    const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-    const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
-    const vis = e.visible !== void 0 ? e.visible ? " visible" : " hidden" : "";
-    const vp = e.inViewport !== void 0 ? e.inViewport ? " in-view" : " off-view" : "";
-    lines.push(
-      `  [${e.ref}] ${e.role}${name} <${e.tag}>${val} @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vis}${vp}`
-    );
-  }
+  for (const e of snap.elements) lines.push(formatElement2(e));
   if (snap.text) lines.push("", "Text:", truncate(snap.text, 4e3));
   return lines.join("\n");
 }
@@ -1617,14 +1654,18 @@ function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n)}\u2026` : s;
 }
 function formatElement2(e) {
-  const r = e.rect;
   const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-  const vp = e.inViewport === false ? " off-view" : "";
-  return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
+  const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
+  const tag = e.tag && e.tag !== e.role ? ` <${e.tag}>` : "";
+  const flags = `${e.visible === false ? " hidden" : ""}${e.inViewport === false ? " off-view" : ""}`;
+  const cx = Math.round(e.rect.x + e.rect.width / 2);
+  const cy = Math.round(e.rect.y + e.rect.height / 2);
+  return `[${e.ref}] ${e.role}${name}${val}${tag} @${cx},${cy}${flags}`;
 }
 
 // src/server/transport.ts
 import { randomUUID } from "crypto";
+import { once } from "events";
 import { WebSocket, WebSocketServer } from "ws";
 var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
 var ExtensionTransport = class {
@@ -1657,6 +1698,11 @@ var ExtensionTransport = class {
       });
       ws.on("error", () => void 0);
     });
+  }
+  /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
+  async listening() {
+    if (!this.wss.address()) await once(this.wss, "listening");
+    return this.wss.address().port;
   }
   get connected() {
     return this.socket?.readyState === WebSocket.OPEN;
@@ -1748,6 +1794,185 @@ function instructions(ports2, browser, desktop) {
 }
 var logFile = (port) => join2(tmpdir2(), `agentcursor-${port}.log`);
 
+// src/server/proxy.ts
+var base = (port) => `http://127.0.0.1:${port}`;
+async function health(port) {
+  try {
+    const res = await fetch(`${base(port)}/health`, { signal: AbortSignal.timeout(1500) });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+async function until(check, timeoutMs) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await check()) return true;
+    await sleep(150);
+  }
+  return false;
+}
+async function ensureDaemon(port) {
+  const current = await health(port);
+  if (current && current.buildId >= BUILD_ID) return;
+  if (current) {
+    await fetch(`${base(port)}/shutdown`, { method: "POST" }).catch(() => void 0);
+    await until(async () => !await health(port), 5e3);
+  }
+  const log = openSync(logFile(port), "a");
+  spawn(process.execPath, [SELF, "serve", "--idle-exit"], {
+    detached: true,
+    stdio: ["ignore", log, log],
+    env: process.env
+  }).unref();
+  const ready = await until(async () => ((await health(port))?.buildId ?? 0) >= BUILD_ID, 15e3);
+  if (!ready) throw new Error(`agentcursor could not start its local service on port ${port}. Log: ${logFile(port)}`);
+}
+async function connectClient(port) {
+  const client = new Client({ name: "agentcursor-stdio", version: readVersion() });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${base(port)}/mcp`)));
+  return client;
+}
+var slim = (t) => {
+  const { $schema, ...schema } = t.inputSchema;
+  const { execution: _execution, ...rest2 } = t;
+  return { ...rest2, inputSchema: schema };
+};
+var unreachable = (e) => {
+  const err = e;
+  return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up/i.test(`${err?.message} ${err?.cause?.code}`);
+};
+async function runStdioProxy(port) {
+  await ensureDaemon(port);
+  let client = await connectClient(port);
+  const call = async (fn) => {
+    try {
+      return await fn(client);
+    } catch (e) {
+      if (!unreachable(e)) throw e;
+      await ensureDaemon(port);
+      client = await connectClient(port);
+      return fn(client);
+    }
+  };
+  const server = new Server(
+    { name: "agentcursor", version: readVersion() },
+    { capabilities: { tools: {}, prompts: {} }, instructions: client.getInstructions() }
+  );
+  const long = { timeout: 15 * 6e4 };
+  server.setRequestHandler(ListToolsRequestSchema, async (req) => {
+    const res = await call((c) => c.listTools(req.params));
+    return { ...res, tools: res.tools.map(slim) };
+  });
+  server.setRequestHandler(CallToolRequestSchema, (req) => call((c) => c.callTool(req.params, void 0, long)));
+  server.setRequestHandler(ListPromptsRequestSchema, (req) => call((c) => c.listPrompts(req.params)));
+  server.setRequestHandler(GetPromptRequestSchema, (req) => call((c) => c.getPrompt(req.params)));
+  await server.connect(new StdioServerTransport());
+  setInterval(() => void health(port), 6e4).unref();
+}
+
+// src/cli/run.ts
+async function runTool(port, argv) {
+  const name = argv[0]?.replace(/-/g, "_");
+  await ensureDaemon(port);
+  const client = await connectClient(port);
+  const tools = (await client.listTools()).tools ?? [];
+  if (!name || name === "help" || name === "tools" || name === "--help" || name === "-h") {
+    process.stdout.write(usage(tools, name === "tools"));
+    return 0;
+  }
+  const tool = tools.find((t) => t.name === name);
+  if (!tool) {
+    process.stderr.write(`agentcursor: unknown command '${argv[0]}'. Try: agentcursor help
+`);
+    return 1;
+  }
+  const args = parseArgs(tool, argv.slice(1));
+  const result = await client.callTool({ name, arguments: args }, void 0, { timeout: 15 * 6e4 });
+  for (const part of result.content ?? []) {
+    if (part.type === "text") process.stdout.write(`${part.text}
+`);
+    else if (part.type === "image" && part.data) process.stdout.write(`${await saveImage(part.data, part.mimeType)}
+`);
+  }
+  return result.isError ? 1 : 0;
+}
+async function saveImage(data, mimeType = "image/png") {
+  const ext = mimeType.includes("jpeg") ? "jpg" : "png";
+  const file = join3(process.env.AGENTCURSOR_OUT ?? tmpdir3(), `agentcursor-${Date.now()}.${ext}`);
+  await writeFile(file, Buffer.from(data, "base64"));
+  return file;
+}
+function parseArgs(tool, rest2) {
+  const props = tool.inputSchema.properties ?? {};
+  const order = Object.keys(props);
+  const args = {};
+  let next = 0;
+  for (let i = 0; i < rest2.length; i++) {
+    const item = rest2[i];
+    if (item.startsWith("--")) {
+      const [flag, inline] = splitFlag(item.slice(2));
+      const type = props[flag]?.type;
+      if (type === "boolean" && inline === void 0) {
+        const peek = rest2[i + 1];
+        const explicit = peek === "true" || peek === "false";
+        args[flag] = explicit ? peek === "true" : true;
+        if (explicit) i++;
+      } else args[flag] = coerce(inline ?? rest2[++i] ?? "", type);
+      continue;
+    }
+    while (next < order.length && order[next] in args) next++;
+    const key = order[next++];
+    if (!key) throw new Error(`agentcursor: too many arguments for ${tool.name}`);
+    args[key] = coerce(item, props[key]?.type);
+  }
+  return args;
+}
+function splitFlag(s) {
+  const eq = s.indexOf("=");
+  return eq === -1 ? [s, void 0] : [s.slice(0, eq), s.slice(eq + 1)];
+}
+function coerce(value, type) {
+  if (type === "number" || type === "integer") {
+    const n = Number(value);
+    if (Number.isNaN(n)) throw new Error(`agentcursor: '${value}' is not a number`);
+    return n;
+  }
+  if (type === "boolean") return value !== "false" && value !== "0";
+  return value;
+}
+function usage(tools, full) {
+  const lines = [
+    "agentcursor: a visible human cursor for browser tabs and Mac apps.",
+    "",
+    "  agentcursor <command> [positional...] [--flag value]",
+    "",
+    "Positionals fill a command's parameters in the order listed below.",
+    "State (page, [refs], frontmost app) is kept by one background service, so commands chain.",
+    "",
+    "Browser (needs the Chrome extension):"
+  ];
+  const line = (t) => {
+    const params = Object.entries(t.inputSchema.properties ?? {}).map(([k, v]) => v.enum ? `${k}=${v.enum.join("|")}` : k).join(" ");
+    const desc = full ? `
+      ${t.description ?? ""}` : "";
+    return `  ${t.name.padEnd(19)} ${params}${desc}`;
+  };
+  for (const t of tools.filter((t2) => !t2.name.startsWith("desktop_"))) lines.push(line(t));
+  const desktop = tools.filter((t) => t.name.startsWith("desktop_"));
+  if (desktop.length) {
+    lines.push("", "Any Mac app (computer use; read is text, not pixels):");
+    for (const t of desktop) lines.push(line(t));
+  }
+  lines.push(
+    "",
+    "Also: agentcursor setup | serve | mcp (stdio MCP server) | tools (same list with full descriptions)",
+    "Screenshots are written to a file and the path is printed. AGENTCURSOR_OUT sets the directory.",
+    ""
+  );
+  return lines.join("\n");
+}
+
 // src/server/http.ts
 import { createServer } from "http";
 import { fileURLToPath as fileURLToPath3 } from "url";
@@ -1757,18 +1982,18 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { spawnSync } from "child_process";
 import { copyFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "fs";
 import { homedir } from "os";
-import { delimiter, dirname, join as join3 } from "path";
+import { delimiter, dirname, join as join4 } from "path";
 var SERVER_NAME = "agentcursor";
 function launchEntry(self) {
-  if (self.includes(join3("_npx", ""))) {
-    return { command: join3(dirname(process.execPath), "npx"), args: ["-y", "agentcursor"] };
+  if (self.includes(join4("_npx", ""))) {
+    return { command: join4(dirname(process.execPath), "npx"), args: ["-y", "agentcursor"] };
   }
   return { command: process.execPath, args: [self] };
 }
 var toolPath = () => [
   process.env.PATH,
   dirname(process.execPath),
-  join3(homedir(), ".local", "bin"),
+  join4(homedir(), ".local", "bin"),
   "/opt/homebrew/bin",
   "/usr/local/bin"
 ].filter(Boolean).join(delimiter);
@@ -1807,7 +2032,7 @@ ${JSON.stringify({ [key]: { [SERVER_NAME]: value } }, null, 2)}`
   return `added to ${path} (backup at .bak); restart the app to load it`;
 }
 function jsonClient(id, name, dir, file, key, shape = (e) => e) {
-  const path = join3(dir, file);
+  const path = join4(dir, file);
   return {
     id,
     name,
@@ -1831,9 +2056,9 @@ function cliClient(id, name, bin, addArgs, configured) {
   };
 }
 function appDataDir(home, ...parts) {
-  if (process.platform === "darwin") return join3(home, "Library", "Application Support", ...parts);
-  if (process.platform === "win32") return join3(process.env.APPDATA ?? join3(home, "AppData", "Roaming"), ...parts);
-  return join3(home, ".config", ...parts);
+  if (process.platform === "darwin") return join4(home, "Library", "Application Support", ...parts);
+  if (process.platform === "win32") return join4(process.env.APPDATA ?? join4(home, "AppData", "Roaming"), ...parts);
+  return join4(home, ".config", ...parts);
 }
 function clients(home = homedir()) {
   return [
@@ -1842,9 +2067,9 @@ function clients(home = homedir()) {
       "Claude Code",
       "claude",
       (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, "--", e.command, ...e.args],
-      () => Boolean(readJson(join3(home, ".claude.json"))?.mcpServers?.[SERVER_NAME])
+      () => Boolean(readJson(join4(home, ".claude.json"))?.mcpServers?.[SERVER_NAME])
     ),
-    jsonClient("cursor", "Cursor", join3(home, ".cursor"), "mcp.json", "mcpServers"),
+    jsonClient("cursor", "Cursor", join4(home, ".cursor"), "mcp.json", "mcpServers"),
     jsonClient("vscode", "VS Code", appDataDir(home, "Code", "User"), "mcp.json", "servers", (e) => ({ type: "stdio", ...e })),
     cliClient(
       "codex",
@@ -1853,27 +2078,27 @@ function clients(home = homedir()) {
       (e) => ["mcp", "add", SERVER_NAME, "--", e.command, ...e.args],
       () => {
         try {
-          return /^\[mcp_servers\.agentcursor\]/m.test(readFileSync2(join3(home, ".codex", "config.toml"), "utf8"));
+          return /^\[mcp_servers\.agentcursor\]/m.test(readFileSync2(join4(home, ".codex", "config.toml"), "utf8"));
         } catch {
           return false;
         }
       }
     ),
-    jsonClient("windsurf", "Windsurf", join3(home, ".codeium", "windsurf"), "mcp_config.json", "mcpServers"),
+    jsonClient("windsurf", "Windsurf", join4(home, ".codeium", "windsurf"), "mcp_config.json", "mcpServers"),
     jsonClient("claude-desktop", "Claude Desktop", appDataDir(home, "Claude"), "claude_desktop_config.json", "mcpServers"),
     cliClient(
       "gemini",
       "Gemini CLI",
       "gemini",
       (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, e.command, ...e.args],
-      () => Boolean(readJson(join3(home, ".gemini", "settings.json"))?.mcpServers?.[SERVER_NAME])
+      () => Boolean(readJson(join4(home, ".gemini", "settings.json"))?.mcpServers?.[SERVER_NAME])
     )
   ];
 }
 function clientStatus(home = homedir()) {
   return clients(home).map((c) => ({ id: c.id, name: c.name, detected: c.detect(), configured: c.configured() }));
 }
-function connectClient(id, entry, home = homedir()) {
+function connectClient2(id, entry, home = homedir()) {
   const client = clients(home).find((c) => c.id === id);
   if (!client) throw new Error(`Unknown client "${id}"`);
   return client.connect(entry);
@@ -1906,13 +2131,13 @@ function serve(rt, opts = {}) {
           res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
           return res.end(wizard_default);
         }
-        if (path === "/health") return json(res, 200, health());
+        if (path === "/health") return json(res, 200, health2());
         if (path === "/api/status") return json(res, 200, await status(rt));
       }
       if (req.method === "POST") {
         const body = await readBody(req);
         if (path === "/api/connect") {
-          return json(res, 200, { message: connectClient(String(body.client), launchEntry(SELF)) });
+          return json(res, 200, { message: connectClient2(String(body.client), launchEntry(SELF)) });
         }
         if (path === "/api/permission") {
           return json(res, 200, await rt.desktop.requestPermission(body.kind === "screen" ? "screen" : "accessibility"));
@@ -1962,14 +2187,14 @@ async function handleMcp(rt, req, res) {
   await server.connect(transport);
   await transport.handleRequest(req, res);
 }
-function health() {
+function health2() {
   return { ok: true, version: readVersion(), buildId: BUILD_ID, pid: process.pid };
 }
 async function status(rt) {
   const supported = desktopSupported();
   const permissions = supported ? await rt.desktop.permissions().catch(() => null) : null;
   return {
-    ...health(),
+    ...health2(),
     platform: process.platform,
     mcpUrl: `http://127.0.0.1:${rt.ports.http}/mcp`,
     stdio: launchEntry(SELF),
@@ -2008,87 +2233,6 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
-}
-
-// src/server/proxy.ts
-import { spawn } from "child_process";
-import { openSync } from "fs";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  GetPromptRequestSchema,
-  ListPromptsRequestSchema,
-  ListToolsRequestSchema
-} from "@modelcontextprotocol/sdk/types.js";
-var base = (port) => `http://127.0.0.1:${port}`;
-async function health2(port) {
-  try {
-    const res = await fetch(`${base(port)}/health`, { signal: AbortSignal.timeout(1500) });
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
-}
-async function until(check, timeoutMs) {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    if (await check()) return true;
-    await sleep(150);
-  }
-  return false;
-}
-async function ensureDaemon(port) {
-  const current = await health2(port);
-  if (current && current.buildId >= BUILD_ID) return;
-  if (current) {
-    await fetch(`${base(port)}/shutdown`, { method: "POST" }).catch(() => void 0);
-    await until(async () => !await health2(port), 5e3);
-  }
-  const log = openSync(logFile(port), "a");
-  spawn(process.execPath, [SELF, "serve", "--idle-exit"], {
-    detached: true,
-    stdio: ["ignore", log, log],
-    env: process.env
-  }).unref();
-  const ready = await until(async () => ((await health2(port))?.buildId ?? 0) >= BUILD_ID, 15e3);
-  if (!ready) throw new Error(`agentcursor could not start its local service on port ${port}. Log: ${logFile(port)}`);
-}
-async function connect(port) {
-  const client = new Client({ name: "agentcursor-stdio", version: readVersion() });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${base(port)}/mcp`)));
-  return client;
-}
-var unreachable = (e) => {
-  const err = e;
-  return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up/i.test(`${err?.message} ${err?.cause?.code}`);
-};
-async function runStdioProxy(port) {
-  await ensureDaemon(port);
-  let client = await connect(port);
-  const call = async (fn) => {
-    try {
-      return await fn(client);
-    } catch (e) {
-      if (!unreachable(e)) throw e;
-      await ensureDaemon(port);
-      client = await connect(port);
-      return fn(client);
-    }
-  };
-  const server = new Server(
-    { name: "agentcursor", version: readVersion() },
-    { capabilities: { tools: {}, prompts: {} }, instructions: client.getInstructions() }
-  );
-  const long = { timeout: 15 * 6e4 };
-  server.setRequestHandler(ListToolsRequestSchema, (req) => call((c) => c.listTools(req.params)));
-  server.setRequestHandler(CallToolRequestSchema, (req) => call((c) => c.callTool(req.params, void 0, long)));
-  server.setRequestHandler(ListPromptsRequestSchema, (req) => call((c) => c.listPrompts(req.params)));
-  server.setRequestHandler(GetPromptRequestSchema, (req) => call((c) => c.getPrompt(req.params)));
-  await server.connect(new StdioServerTransport());
-  setInterval(() => void health2(port), 6e4).unref();
 }
 
 // src/setup/cli.ts
@@ -2133,8 +2277,5 @@ if (command === "serve") {
 } else if (command === "mcp") {
   await runStdioProxy(ports.http);
 } else {
-  process.stderr.write(
-    "usage: agentcursor [mcp|serve|setup]\n  mcp    stdio MCP server for AI apps (default)\n  serve  run the local service in the foreground\n  setup  connect your AI apps and open the setup page (--all, --client=cursor,codex, --no-open)\n"
-  );
-  process.exit(1);
+  process.exit(await runTool(ports.http, [command, ...rest]));
 }

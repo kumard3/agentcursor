@@ -9,14 +9,21 @@ import {
 import { DebuggerDriver } from "./debugger-driver";
 import { log } from "./timing";
 
-const PORT = DEFAULT_WS_PORT;
 const debuggerDriver = new DebuggerDriver();
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 type DriveCommand = Extract<Command, { mode: DeliveryMode }>;
 
-function connect(): void {
+// AgentCursor.launch() writes launch.json into its private copy of the
+// extension so that instance talks only to its own test's port.
+const port: Promise<number> = fetch(chrome.runtime.getURL("launch.json"))
+  .then((r) => r.json())
+  .then((c: { port: number }) => c.port)
+  .catch(() => DEFAULT_WS_PORT);
+
+async function connect(): Promise<void> {
+  const PORT = await port;
   if (
     socket &&
     (socket.readyState === WebSocket.OPEN ||
@@ -46,7 +53,7 @@ function scheduleReconnect(): void {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    connect();
+    void connect();
   }, 1500);
 }
 
@@ -96,7 +103,7 @@ async function activeTabId(): Promise<number> {
 async function route(cmd: Command): Promise<unknown> {
   const tabId = await activeTabId();
   if (cmd.kind === "navigate") {
-    await chrome.tabs.update(tabId, { url: cmd.url });
+    await navigateAndWait(tabId, cmd.url);
     return null;
   }
   if (cmd.kind === "getUrl") {
@@ -105,6 +112,13 @@ async function route(cmd: Command): Promise<unknown> {
   }
   if (cmd.kind === "screenshot") {
     const format = cmd.format ?? "png";
+    // Headless hands back the previous frame unless a paint happens first.
+    await chrome.scripting
+      .executeScript({
+        target: { tabId },
+        func: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+      })
+      .catch(() => undefined);
     const dataUrl = await chrome.tabs.captureVisibleTab({ format });
     try {
       const geom = (await sendToContent(tabId, { kind: "windowGeometry" })) as {
@@ -119,6 +133,11 @@ async function route(cmd: Command): Promise<unknown> {
   if (cmd.kind === "hover" || cmd.kind === "ensureVisible") {
     // Hover and ensureVisible go via content (for DOM scrollIntoView + events)
     return sendToContent(tabId, cmd);
+  }
+  if (cmd.kind === "evaluate") {
+    // CDP Runtime.evaluate: page realm (page cookies + globals), awaits
+    // promises, and bypasses the page CSP the way DevTools does.
+    return debuggerDriver.evaluate(tabId, cmd.expression);
   }
   if (isDrive(cmd) && cmd.mode === "debugger") {
     return debuggerDriver.handle(tabId, cmd);
@@ -161,15 +180,44 @@ async function scaleToViewport(
   return `data:${mime};base64,${btoa(bin)}`;
 }
 
+function navigateAndWait(tabId: number, url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+    const onUpdated = (id: number, info: chrome.tabs.OnUpdatedInfo) => {
+      if (id === tabId && info.status === "complete") done();
+    };
+    const timer = setTimeout(done, 15_000);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.update(tabId, { url }).catch((err) => {
+      done();
+      reject(err);
+    });
+  });
+}
+
 async function sendToContent(tabId: number, cmd: Command): Promise<unknown> {
   const env: CommandEnvelope = { v: PROTOCOL_VERSION, id: "", command: cmd };
   let res: { ok: boolean; data?: unknown; error?: string } | undefined;
-  try {
-    res = await chrome.tabs.sendMessage(tabId, env);
-  } catch {
-    throw new Error(
-      "AgentCursor content script is not present on this tab (chrome:// and Web Store pages are not supported).",
-    );
+  // The content script lands at document_idle, so right after a navigation
+  // (goto, or a click that follows a link) it can be briefly absent.
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      res = await chrome.tabs.sendMessage(tabId, env);
+      break;
+    } catch (err) {
+      const absent = /Receiving end does not exist/.test(String(err));
+      if (!absent || Date.now() >= deadline) {
+        throw new Error(
+          "AgentCursor content script is not present on this tab (chrome:// and Web Store pages are not supported).",
+        );
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
   if (!res) throw new Error("No response from page");
   if (!res.ok) throw new Error(res.error ?? "content script error");
@@ -178,7 +226,7 @@ async function sendToContent(tabId: number, cmd: Command): Promise<unknown> {
 
 chrome.alarms.create("agentcursor-keepalive", { periodInMinutes: 0.4 });
 chrome.alarms.onAlarm.addListener(() => {
-  if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+  if (!socket || socket.readyState === WebSocket.CLOSED) void connect();
 });
 
-connect();
+void connect();

@@ -216,7 +216,7 @@ async function resolveLocator(
     rect: { x: r.x, y: r.y, width: r.width, height: r.height },
     count: els.length,
     visible: isVisible(first),
-    text: (first.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 200),
+    text: (first.textContent ?? "").trim().replace(/\s+/g, " "),
   };
 }
 

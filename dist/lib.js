@@ -1,6 +1,14 @@
 // src/sdk/agent-cursor.ts
 import { writeFile } from "fs/promises";
 
+// src/protocol/index.ts
+var DEFAULT_WS_PORT = 8930;
+var PROTOCOL_VERSION = 1;
+function buildEvalExpression(fn, args = []) {
+  const argList = args.map((a) => JSON.stringify(a) ?? "undefined").join(",");
+  return `(${fn.trim()})(${argList})`;
+}
+
 // src/path-engine/geometry.ts
 function distance(a, b) {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -226,27 +234,27 @@ function buildTypingSchedule(text, rng, traits) {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     const prev = text[i - 1];
-    let delay3 = Math.max(8, rng.gaussian(base, base * 0.35));
+    let delay5 = Math.max(8, rng.gaussian(base, base * 0.35));
     if (first) {
-      delay3 += traits.reactionMs * rng.range(0.6, 1.1);
+      delay5 += traits.reactionMs * rng.range(0.6, 1.1);
       first = false;
     } else if (prev === " ") {
-      delay3 += base * rng.range(1.5, 3.5);
+      delay5 += base * rng.range(1.5, 3.5);
     } else if (prev && ".?!".includes(prev)) {
-      delay3 += base * rng.range(3, 6);
+      delay5 += base * rng.range(3, 6);
     } else if (rng.bool(0.06)) {
-      delay3 += base * rng.range(2, 5);
+      delay5 += base * rng.range(2, 5);
     }
     if (/[a-zA-Z]/.test(ch) && rng.bool(traits.errorRate)) {
       const wrong = wrongChar(ch, rng);
       if (wrong) {
-        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay3) });
+        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay5) });
         ops.push({ t: "back", delayMs: Math.round(base * rng.range(2, 5)) });
         ops.push({ t: "key", ch, delayMs: Math.round(base * rng.range(0.8, 1.4)) });
         continue;
       }
     }
-    ops.push({ t: "key", ch, delayMs: Math.round(delay3) });
+    ops.push({ t: "key", ch, delayMs: Math.round(delay5) });
   }
   return ops;
 }
@@ -456,6 +464,9 @@ var ActionService = class {
   }
   getUrl() {
     return this.driver.getUrl();
+  }
+  evaluate(fn, args = []) {
+    return this.driver.evaluate(buildEvalExpression(fn, args));
   }
   async waitFor(opts) {
     await this.idleDrift();
@@ -683,6 +694,9 @@ var ExtensionDriver = class {
       opts.timeoutMs + 5e3
     );
   }
+  async evaluate(expression) {
+    return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
+  }
 };
 
 // src/drivers/coord-map.ts
@@ -765,6 +779,69 @@ async function scrollSteps(nut, dx, dy, steps) {
     await sleep(rand(12, 28));
   }
 }
+var KEY_ALIASES = {
+  cmd: "LeftCmd",
+  command: "LeftCmd",
+  meta: "LeftCmd",
+  super: "LeftSuper",
+  win: "LeftWin",
+  ctrl: "LeftControl",
+  control: "LeftControl",
+  alt: "LeftAlt",
+  option: "LeftAlt",
+  opt: "LeftAlt",
+  shift: "LeftShift",
+  enter: "Enter",
+  return: "Return",
+  esc: "Escape",
+  escape: "Escape",
+  tab: "Tab",
+  space: "Space",
+  backspace: "Backspace",
+  delete: "Delete",
+  del: "Delete",
+  up: "Up",
+  down: "Down",
+  left: "Left",
+  right: "Right",
+  arrowup: "Up",
+  arrowdown: "Down",
+  arrowleft: "Left",
+  arrowright: "Right",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  "-": "Minus",
+  "=": "Equal",
+  ",": "Comma",
+  ".": "Period",
+  "/": "Slash",
+  ";": "Semicolon",
+  "'": "Quote",
+  "[": "LeftBracket",
+  "]": "RightBracket",
+  "\\": "Backslash",
+  "`": "Grave"
+};
+function parseKeyCombo(combo) {
+  const parts = combo.split("+").map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) throw new Error("Empty key combo");
+  return parts.map((part) => {
+    const lower = part.toLowerCase();
+    if (KEY_ALIASES[lower]) return KEY_ALIASES[lower];
+    if (/^[a-z]$/.test(lower)) return lower.toUpperCase();
+    if (/^[0-9]$/.test(lower)) return `Num${lower}`;
+    if (/^f([1-9]|1[0-9]|2[0-4])$/.test(lower)) return lower.toUpperCase();
+    throw new Error(`Unknown key "${part}" in "${combo}"`);
+  });
+}
+async function pressCombo(nut, combo, holdMs) {
+  const keys = parseKeyCombo(combo).map((name) => nut.Key[name]);
+  await nut.keyboard.pressKey(...keys);
+  await sleep(holdMs);
+  await nut.keyboard.releaseKey(...keys.reverse());
+}
 
 // src/drivers/os-cursor-driver.ts
 var OsCursorDriver = class {
@@ -834,6 +911,9 @@ var OsCursorDriver = class {
       opts.timeoutMs + 5e3
     );
   }
+  async evaluate(expression) {
+    return this.transport.send({ kind: "evaluate", expression }, 6e4);
+  }
   async cursorState() {
     const nut = await loadNut();
     const pos = await nut.mouse.getPosition();
@@ -864,12 +944,9 @@ var OsCursorDriver = class {
   }
 };
 
-// src/protocol/index.ts
-var DEFAULT_WS_PORT = 8930;
-var PROTOCOL_VERSION = 1;
-
 // src/server/transport.ts
 import { randomUUID } from "crypto";
+import { once } from "events";
 import { WebSocket, WebSocketServer } from "ws";
 var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
 var ExtensionTransport = class {
@@ -902,6 +979,11 @@ var ExtensionTransport = class {
       });
       ws.on("error", () => void 0);
     });
+  }
+  /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
+  async listening() {
+    if (!this.wss.address()) await once(this.wss, "listening");
+    return this.wss.address().port;
   }
   get connected() {
     return this.socket?.readyState === WebSocket.OPEN;
@@ -943,8 +1025,130 @@ var ExtensionTransport = class {
   }
 };
 
-// src/sdk/locator.ts
+// src/sdk/launch.ts
+import { spawn } from "child_process";
+import { once as once2 } from "events";
+import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { fileURLToPath } from "url";
+var CHROME_PATHS = {
+  darwin: [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium"
+  ],
+  linux: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"],
+  win32: [
+    `${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env["PROGRAMFILES(X86)"]}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
+  ]
+};
+function findChrome(explicit) {
+  const path = explicit ?? process.env.AGENTCURSOR_CHROME ?? (CHROME_PATHS[process.platform] ?? []).find(existsSync);
+  if (!path || !existsSync(path)) {
+    throw new Error("agentcursor: Chrome not found. Pass { executablePath } or set AGENTCURSOR_CHROME.");
+  }
+  return path;
+}
+function extensionDir() {
+  for (const rel of ["../extension", "../../extension"]) {
+    const dir = fileURLToPath(new URL(rel, import.meta.url));
+    if (existsSync(join(dir, "dist", "service-worker.js"))) return dir;
+  }
+  throw new Error("agentcursor: built extension not found. Run `pnpm build` first.");
+}
+async function launchBrowser(port, options = {}) {
+  const chrome = findChrome(options.executablePath);
+  const realProfile = options.userDataDir;
+  const profile = realProfile ?? mkdtempSync(join(tmpdir(), "agentcursor-"));
+  const ext = mkdtempSync(join(tmpdir(), "agentcursor-ext-"));
+  const src = extensionDir();
+  for (const part of ["manifest.json", "dist", "icons"]) cpSync(join(src, part), join(ext, part), { recursive: true });
+  writeFileSync(join(ext, "launch.json"), JSON.stringify({ port }));
+  const args = [
+    "--remote-debugging-pipe",
+    `--user-data-dir=${profile}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-search-engine-choice-screen",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    ...options.headless ? ["--headless=new"] : [],
+    ...options.args ?? [],
+    "about:blank"
+  ];
+  const proc = spawn(chrome, args, { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  const cdp = new PipeCdp(proc.stdio[3], proc.stdio[4]);
+  const exited = once2(proc, "exit");
+  const cleanup = async () => {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      await cdp.send("Browser.close", {}, 3e3).catch(() => proc.kill());
+      await Promise.race([exited, delay(5e3).then(() => proc.kill("SIGKILL"))]);
+    }
+    rmSync(ext, { recursive: true, force: true, maxRetries: 5 });
+    if (!realProfile) rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+  };
+  try {
+    await Promise.race([
+      cdp.send("Extensions.loadUnpacked", { path: ext }, 15e3),
+      exited.then(() => {
+        throw new Error(`agentcursor: Chrome exited during launch (${chrome})`);
+      })
+    ]);
+  } catch (err) {
+    await cleanup();
+    throw err;
+  }
+  return { close: cleanup };
+}
 var delay = (ms) => new Promise((r) => setTimeout(r, ms));
+var PipeCdp = class {
+  constructor(out, input) {
+    this.out = out;
+    input.setEncoding("utf8");
+    input.on("data", (chunk) => this.onData(chunk));
+    input.on("error", () => void 0);
+    out.on("error", () => void 0);
+  }
+  out;
+  nextId = 1;
+  buf = "";
+  pending = /* @__PURE__ */ new Map();
+  send(method, params, timeoutMs) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`agentcursor: CDP ${method} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => (clearTimeout(timer), resolve(v)),
+        reject: (e) => (clearTimeout(timer), reject(e))
+      });
+      this.out.write(`${JSON.stringify({ id, method, params })}\0`);
+    });
+  }
+  onData(chunk) {
+    this.buf += chunk;
+    let end;
+    while ((end = this.buf.indexOf("\0")) >= 0) {
+      const msg = JSON.parse(this.buf.slice(0, end));
+      this.buf = this.buf.slice(end + 1);
+      const entry = msg.id === void 0 ? void 0 : this.pending.get(msg.id);
+      if (!entry) continue;
+      this.pending.delete(msg.id);
+      if (msg.error) entry.reject(new Error(`agentcursor: CDP ${msg.error.message}`));
+      else entry.resolve(msg.result);
+    }
+  }
+};
+
+// src/sdk/locator.ts
+var delay2 = (ms) => new Promise((r) => setTimeout(r, ms));
 var Locator = class _Locator {
   constructor(ctx, spec) {
     this.ctx = ctx;
@@ -1017,9 +1221,9 @@ var Locator = class _Locator {
     await this.ctx.action.pressKey(key, opts.stealth ?? this.ctx.stealth);
     return this;
   }
-  async dragTo(target, opts = {}) {
+  async dragTo(target2, opts = {}) {
     const from = await this.require();
-    const to = await target.require();
+    const to = await target2.require();
     await this.ctx.action.drag({ rect: from.rect }, { rect: to.rect }, "left", opts.stealth ?? this.ctx.stealth);
     return this;
   }
@@ -1031,16 +1235,16 @@ var Locator = class _Locator {
     const m = await this.resolve(false);
     return m.count > 0 ? m.rect : null;
   }
-  async textContent() {
-    const m = await this.resolve(false);
+  async textContent(opts = {}) {
+    const m = await this.resolve(false, opts.timeout);
     return m.count > 0 ? m.text : null;
   }
   async isVisible() {
-    const m = await this.resolve(false);
+    const m = await this.resolve(false, 0);
     return m.count > 0 && m.visible;
   }
   async count() {
-    const m = await this.resolve(false);
+    const m = await this.resolve(false, 0);
     return m.count;
   }
   async waitFor(opts = {}) {
@@ -1050,10 +1254,13 @@ var Locator = class _Locator {
       const m = await this.resolve(false, 0);
       if (m.count > 0 && (state === "attached" || m.visible)) return this;
       if (Date.now() >= deadline) {
-        throw new Error(`agentcursor: waitFor(${state}) timed out for locator [${describe(this.spec)}]`);
+        throw new Error(`agentcursor: waitFor(${state}) timed out for locator [${this}]`);
       }
-      await delay(150);
+      await delay2(150);
     }
+  }
+  toString() {
+    return describe(this.spec);
   }
   step(s) {
     return new _Locator(this.ctx, [...this.spec, s]);
@@ -1064,7 +1271,7 @@ var Locator = class _Locator {
   async require() {
     const m = await this.resolve(true);
     if (m.count === 0) {
-      throw new Error(`agentcursor: no element matched locator [${describe(this.spec)}]`);
+      throw new Error(`agentcursor: no element matched locator [${this}]`);
     }
     return m;
   }
@@ -1074,21 +1281,42 @@ function center(r) {
 }
 function describe(spec) {
   return spec.map(
-    (s) => s.kind === "filter" ? `filter(hasText=${s.hasText})` : s.kind === "nth" ? `nth(${s.index})` : `${s.kind}=${s.value}`
+    (s) => s.kind === "filter" ? `filter(hasText=${s.hasText})` : s.kind === "nth" ? `nth(${s.index})` : s.kind === "role" && s.name ? `role=${s.value}[name=${s.name}]` : `${s.kind}=${s.value}`
   ).join(" >> ");
 }
 
 // src/sdk/agent-cursor.ts
-var delay2 = (ms) => new Promise((r) => setTimeout(r, ms));
+var delay3 = (ms) => new Promise((r) => setTimeout(r, ms));
 var AgentCursor = class _AgentCursor {
-  constructor(action, transport, opts) {
+  constructor(action, transport, opts, dispose) {
     this.action = action;
     this.transport = transport;
     this.opts = opts;
+    this.dispose = dispose;
   }
   action;
   transport;
   opts;
+  dispose;
+  static async launch(options = {}) {
+    const transport = new ExtensionTransport(0);
+    const port = await transport.listening();
+    let browser;
+    try {
+      browser = await launchBrowser(port, options);
+    } catch (err) {
+      transport.close();
+      throw err;
+    }
+    try {
+      await waitForConnection(transport, port, options.timeoutMs ?? 15e3);
+    } catch (err) {
+      await browser.close();
+      throw err;
+    }
+    const action = new ActionService(new ExtensionDriver(transport), createPersona(options.seed));
+    return new _AgentCursor(action, transport, { stealth: options.stealth ?? false }, browser.close);
+  }
   static connect(options = {}) {
     return _AgentCursor.start(options, (t) => new ExtensionDriver(t));
   }
@@ -1134,6 +1362,9 @@ var AgentCursor = class _AgentCursor {
   url() {
     return this.action.getUrl();
   }
+  evaluate(fn, ...args) {
+    return this.action.evaluate(typeof fn === "string" ? fn : fn.toString(), args);
+  }
   async scroll(opts) {
     await this.action.scroll({ dy: opts.dy, dx: opts.dx, stealth: opts.stealth ?? this.opts.stealth });
     return this;
@@ -1151,6 +1382,7 @@ var AgentCursor = class _AgentCursor {
   }
   async close() {
     this.transport.close();
+    await this.dispose?.();
   }
   ctx() {
     return { action: this.action, stealth: this.opts.stealth };
@@ -1168,12 +1400,417 @@ async function waitForConnection(t, port, timeoutMs) {
         `agentcursor: no browser connected on ws://127.0.0.1:${port}. Open Chrome with the agentcursor extension loaded, or pass a different { port }.`
       );
     }
-    await delay2(150);
+    await delay3(150);
   }
+}
+
+// src/sdk/desktop.ts
+import { writeFile as writeFile2 } from "fs/promises";
+
+// src/desktop/service.ts
+import { execFile as execFile2 } from "child_process";
+import { mkdtemp, readFile, rm } from "fs/promises";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join2 } from "path";
+import { promisify } from "util";
+
+// src/desktop/ax.ts
+import { execFile } from "child_process";
+import { existsSync as existsSync2 } from "fs";
+import { fileURLToPath as fileURLToPath2 } from "url";
+var helperPath = fileURLToPath2(new URL("./native/agentcursor-ax", import.meta.url));
+function ax(args, timeoutMs = 2e4) {
+  if (process.platform !== "darwin") {
+    return Promise.reject(new Error("Desktop control currently supports macOS only."));
+  }
+  return new Promise((resolve, reject) => {
+    execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+      if (err?.code === "ENOENT") {
+        return reject(new Error(`Desktop helper missing at ${helperPath}. Run \`pnpm build\`.`));
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        return reject(new Error(err?.message ?? "Desktop helper returned no output"));
+      }
+      if (parsed?.error) return reject(new Error(parsed.error));
+      resolve(parsed);
+    });
+  });
+}
+var appArgs = (app) => app === void 0 ? [] : typeof app === "number" ? ["--pid", String(app)] : ["--app", app];
+
+// src/desktop/service.ts
+var run = promisify(execFile2);
+var DesktopService = class {
+  constructor(persona) {
+    this.persona = persona;
+  }
+  persona;
+  view = null;
+  currentPid;
+  permissions() {
+    return ax(["permissions"]);
+  }
+  requestPermission(kind) {
+    return ax([kind === "screen" ? "request-screen" : "request-accessibility"]);
+  }
+  apps() {
+    return ax(["apps"]);
+  }
+  async open(app) {
+    const before = (await this.apps()).find((a) => a.active)?.pid;
+    await run("open", ["-a", app]).catch((e) => {
+      throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
+    });
+    const want = app.toLowerCase();
+    for (let i = 0; i < 40; i++) {
+      const front = (await this.apps()).find((a) => a.active);
+      const name = front?.name.toLowerCase() ?? "";
+      if (front && (name === want || name.includes(want) || want.includes(name) || front.pid !== before)) {
+        this.currentPid = front.pid;
+        this.view = null;
+        return front;
+      }
+      await sleep(250);
+    }
+    throw new Error(`Opened "${app}" but it did not come to the front.`);
+  }
+  async read(opts = {}) {
+    const snap = await ax([
+      "snapshot",
+      ...appArgs(opts.app ?? this.currentPid),
+      "--max",
+      String(opts.max ?? 150)
+    ]);
+    this.currentPid = snap.pid;
+    this.view = {
+      app: { name: snap.name, pid: snap.pid, bundleId: snap.bundleId },
+      window: snap.window,
+      truncated: snap.truncated,
+      elements: snap.elements.map((e, i) => ({
+        ref: `d${i + 1}`,
+        role: e.role,
+        name: e.name,
+        value: e.value,
+        rect: { x: e.x, y: e.y, width: e.w, height: e.h },
+        enabled: e.enabled,
+        focused: e.focused
+      }))
+    };
+    return this.view;
+  }
+  async find(text, opts = {}) {
+    const view = await this.read({ app: opts.app, max: 400 });
+    return rankByText(view.elements, text).slice(0, opts.maxResults ?? 8);
+  }
+  async click(t) {
+    const target2 = await this.resolve(t);
+    await this.front(target2.pid);
+    await this.moveHuman(target2.point, target2.width);
+    const traits = this.persona.traits();
+    await sleep(sampleDwellMs(this.persona.rng, traits.dwellScale));
+    await pressButton(await loadNut(), t.button ?? "left", samplePressMs(this.persona.rng, traits.pressScale), t.double);
+    return describe2(target2);
+  }
+  async move(t) {
+    const target2 = await this.resolve(t);
+    await this.front(target2.pid);
+    await this.moveHuman(target2.point, target2.width);
+    return describe2(target2);
+  }
+  async type(opts) {
+    if (opts.ref || opts.text || typeof opts.x === "number") await this.click(opts);
+    else await this.front(this.currentPid);
+    const nut = await loadNut();
+    if (opts.clear) {
+      await pressCombo(nut, process.platform === "darwin" ? "cmd+a" : "ctrl+a", 60);
+      await pressCombo(nut, "backspace", 40);
+    }
+    this.persona.tick();
+    const base = 12e3 / this.persona.traits().wpm;
+    await typeText(nut, opts.value, {
+      schedule: this.persona.keySchedule(opts.value),
+      perKeyMinMs: base * 0.6,
+      perKeyMaxMs: base * 1.8
+    });
+    if (opts.submit) await pressCombo(nut, "enter", samplePressMs(this.persona.rng));
+  }
+  async key(combo) {
+    await this.front(this.currentPid);
+    this.persona.tick();
+    await sleep(this.persona.thinkTimeMs(0));
+    await pressCombo(await loadNut(), combo, samplePressMs(this.persona.rng, this.persona.traits().pressScale));
+  }
+  async scroll(opts) {
+    if (opts.ref || opts.text || typeof opts.x === "number") {
+      const target2 = await this.resolve(opts);
+      await this.front(target2.pid);
+      await this.moveHuman(target2.point, target2.width);
+    } else {
+      await this.front(this.currentPid);
+    }
+    this.persona.tick();
+    const steps = Math.max(3, Math.round(Math.abs(opts.dy || opts.dx || 0) / this.persona.rng.range(80, 140)));
+    await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
+    this.view = null;
+  }
+  async screenshot(opts = {}) {
+    let rect;
+    let label;
+    if (opts.ref) {
+      const el = this.element(opts.ref);
+      const pad = 40;
+      rect = { x: el.rect.x - pad, y: el.rect.y - pad, width: el.rect.width + pad * 2, height: el.rect.height + pad * 2 };
+      label = `around [${el.ref}]`;
+    } else {
+      const info = await ax(["window", ...appArgs(opts.app ?? this.currentPid)]);
+      rect = { x: info.window.x, y: info.window.y, width: info.window.w, height: info.window.h };
+      label = `${info.name} window`;
+    }
+    const dir = await mkdtemp(join2(tmpdir2(), "agentcursor-shot-"));
+    const file = join2(dir, "shot.jpg");
+    try {
+      await run("screencapture", ["-x", "-t", "jpg", `-R${rect.x},${rect.y},${rect.width},${rect.height}`, file]);
+      const maxWidth = opts.maxWidth ?? 1024;
+      if ((await imageSize(file)).width > maxWidth) {
+        await run("sips", ["--resampleWidth", String(maxWidth), file]);
+      }
+      const size = await imageSize(file);
+      const scale = rect.width / size.width;
+      return {
+        data: (await readFile(file)).toString("base64"),
+        mimeType: "image/jpeg",
+        note: `${label}: image ${size.width}x${size.height} covers screen ${rect.x},${rect.y} ${rect.width}x${rect.height}. Screen x = ${rect.x} + px*${scale.toFixed(3)}, y = ${rect.y} + py*${scale.toFixed(3)}.`
+      };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  async wiggle() {
+    const nut = await loadNut();
+    const start = await nut.mouse.getPosition();
+    let from = { x: start.x, y: start.y };
+    for (const to of [
+      { x: start.x + 160, y: start.y - 70 },
+      { x: start.x + 70, y: start.y + 100 },
+      { x: start.x, y: start.y }
+    ]) {
+      await playPath(nut, generateMove(from, to, this.persona.moveOptions(24)));
+      await sleep(150);
+      from = to;
+    }
+  }
+  element(ref) {
+    const el = this.view?.elements.find((e) => e.ref === ref);
+    if (!el) throw new Error(`Unknown ref '${ref}'. Refs expire after scrolling or switching apps; call desktop_read again.`);
+    return el;
+  }
+  async resolve(t) {
+    if (typeof t.x === "number" && typeof t.y === "number") {
+      return { point: { x: t.x, y: t.y }, width: 24, pid: this.currentPid };
+    }
+    let el;
+    if (t.ref) {
+      el = this.element(t.ref);
+    } else if (t.text) {
+      el = (await this.find(t.text, { app: t.app, maxResults: 1 }))[0];
+      if (!el) {
+        throw new Error(`Nothing labelled "${t.text}" in ${this.view?.app.name ?? "the app"}. Try desktop_read or desktop_screenshot.`);
+      }
+    } else {
+      throw new Error("Provide a ref, text, or x and y.");
+    }
+    const precision = this.persona.traits().precision;
+    return {
+      point: offCenterPoint(el.rect, this.persona.rng, precision),
+      width: Math.max(Math.min(el.rect.width, el.rect.height), 8),
+      pid: this.view?.app.pid,
+      el
+    };
+  }
+  async moveHuman(to, width) {
+    const nut = await loadNut();
+    const pos = await nut.mouse.getPosition();
+    const from = { x: pos.x, y: pos.y };
+    this.persona.tick();
+    await sleep(this.persona.thinkTimeMs(distance(from, to)));
+    await playPath(nut, generateMove(from, to, this.persona.moveOptions(width)));
+  }
+  async front(pid) {
+    if (pid) await ax(["activate", "--pid", String(pid)]).catch(() => void 0);
+  }
+};
+function describe2(target2) {
+  const at = `(${Math.round(target2.point.x)}, ${Math.round(target2.point.y)})`;
+  return target2.el ? `[${target2.el.ref}] ${target2.el.role} "${target2.el.name}" at ${at}` : at;
+}
+async function imageSize(file) {
+  const { stdout } = await run("sips", ["-g", "pixelWidth", "-g", "pixelHeight", file]);
+  return {
+    width: Number(/pixelWidth: (\d+)/.exec(stdout)?.[1] ?? 0),
+    height: Number(/pixelHeight: (\d+)/.exec(stdout)?.[1] ?? 0)
+  };
+}
+function formatView(view, only) {
+  const w = view.window;
+  const lines = [`${view.app.name} window "${w.title}" @${w.x},${w.y} ${w.w}x${w.h} (element @x,y = center)`];
+  for (const e of only ?? view.elements) lines.push(formatElement(e));
+  if (!only && view.truncated) lines.push("(more elements hidden; pass a larger max)");
+  return lines.join("\n");
+}
+function formatElement(e) {
+  const name = e.name ? ` "${e.name}"` : "";
+  const value = e.value ? ` value="${e.value.length > 60 ? `${e.value.slice(0, 60)}\u2026` : e.value}"` : "";
+  const flags = `${e.enabled === false ? " disabled" : ""}${e.focused ? " focused" : ""}`;
+  const cx = Math.round(e.rect.x + e.rect.width / 2);
+  const cy = Math.round(e.rect.y + e.rect.height / 2);
+  return `[${e.ref}] ${e.role}${name}${value} @${cx},${cy}${flags}`;
+}
+
+// src/sdk/desktop.ts
+var isRef = (s) => /^d\d+$/.test(s);
+var target = (q) => typeof q === "string" ? isRef(q) ? { ref: q } : { text: q } : q;
+var Desktop = class _Desktop {
+  constructor(service) {
+    this.service = service;
+  }
+  service;
+  static async open(app, options = {}) {
+    const d = new _Desktop(new DesktopService(createPersona(options.seed)));
+    if (app) await d.service.open(app);
+    return d;
+  }
+  /** Escape hatch to the lower-level service (same object the MCP tools use). */
+  get actions() {
+    return this.service;
+  }
+  apps() {
+    return this.service.apps();
+  }
+  permissions() {
+    return this.service.permissions();
+  }
+  activate(app) {
+    return this.service.open(app);
+  }
+  /** The window as compact text with [dN] refs: far fewer tokens than a screenshot. */
+  async read(opts = {}) {
+    return formatView(await this.service.read(opts));
+  }
+  /** Structured form of read(), when you want to assert on elements yourself. */
+  view(opts = {}) {
+    return this.service.read(opts);
+  }
+  /** Only the elements matching a label: a handful of tokens instead of a whole window. */
+  async find(text, opts = {}) {
+    const matches = await this.service.find(text, opts);
+    return matches.length ? matches.map(formatElement).join("\n") : `Nothing matching "${text}".`;
+  }
+  elements(text, opts = {}) {
+    return this.service.find(text, opts);
+  }
+  click(q, opts = {}) {
+    return this.service.click({ ...target(q), ...opts });
+  }
+  dblclick(q) {
+    return this.service.click({ ...target(q), double: true });
+  }
+  move(q) {
+    return this.service.move(target(q));
+  }
+  async type(value, opts = {}) {
+    await this.service.type({ ...opts.into ? target(opts.into) : {}, value, clear: opts.clear, submit: opts.submit });
+  }
+  key(combo) {
+    return this.service.key(combo);
+  }
+  async scroll(opts) {
+    await this.service.scroll({ ...opts.over ? target(opts.over) : {}, dy: opts.dy, dx: opts.dx });
+  }
+  /** Window screenshot, downscaled. Use when the text read is not enough. */
+  async screenshot(opts = {}) {
+    const shot = await this.service.screenshot(opts);
+    if (opts.path) await writeFile2(opts.path, Buffer.from(shot.data, "base64"));
+    return opts.path ?? `data:${shot.mimeType};base64,${shot.data}`;
+  }
+  /** Waits for text to appear in the window. Returns false on timeout. */
+  async waitForText(text, opts = {}) {
+    const deadline = Date.now() + (opts.timeout ?? 1e4);
+    for (; ; ) {
+      if ((await this.service.find(text, { app: opts.app, maxResults: 1 })).length > 0) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+};
+
+// src/sdk/expect.ts
+var delay4 = (ms) => new Promise((r) => setTimeout(r, ms));
+var norm = (s) => s.replace(/\s+/g, " ").trim();
+function expect(target2, opts = {}) {
+  return build(target2, opts.timeout ?? 5e3, false);
+}
+function build(target2, timeout, negate) {
+  const loc = () => {
+    if (target2 instanceof Locator) return target2;
+    throw new Error("agentcursor: this matcher needs a locator, e.g. expect(ac.getByText('Saved'))");
+  };
+  const assert = async (name, expected, check) => {
+    const deadline = Date.now() + timeout;
+    for (; ; ) {
+      const [pass, actual] = await check();
+      if (pass !== negate) return;
+      if (Date.now() >= deadline) {
+        const subject = target2 instanceof Locator ? `locator [${target2}]` : "page";
+        const want = expected === void 0 ? "" : String(expected);
+        throw new Error(
+          `expect(${subject}).${negate ? "not." : ""}${name}(${want}) failed after ${timeout}ms, got ${JSON.stringify(actual)}`
+        );
+      }
+      await delay4(100);
+    }
+  };
+  const text = () => loc().textContent({ timeout: 0 });
+  const visible = async () => {
+    const v = await loc().isVisible();
+    return [v, v ? "visible" : "hidden"];
+  };
+  return {
+    get not() {
+      return build(target2, timeout, !negate);
+    },
+    toBeVisible: () => assert("toBeVisible", void 0, visible),
+    toBeHidden: () => assert("toBeHidden", void 0, async () => {
+      const [v, actual] = await visible();
+      return [!v, actual];
+    }),
+    toHaveText: (expected) => assert("toHaveText", expected, async () => {
+      const t = await text();
+      const pass = t !== null && (typeof expected === "string" ? norm(t) === norm(expected) : expected.test(t));
+      return [pass, t];
+    }),
+    toContainText: (expected) => assert("toContainText", expected, async () => {
+      const t = await text();
+      return [t !== null && norm(t).includes(norm(expected)), t];
+    }),
+    toHaveCount: (expected) => assert("toHaveCount", expected, async () => {
+      const n = await loc().count();
+      return [n === expected, n];
+    }),
+    toHaveURL: (expected) => assert("toHaveURL", expected, async () => {
+      if (target2 instanceof Locator) throw new Error("agentcursor: toHaveURL needs the page, e.g. expect(ac)");
+      const url = await target2.url();
+      return [typeof expected === "string" ? url === expected : expected.test(url), url];
+    })
+  };
 }
 export {
   ActionService,
   AgentCursor,
+  Desktop,
+  DesktopService,
   ExtensionDriver,
   ExtensionTransport,
   Locator,
@@ -1182,6 +1819,7 @@ export {
   buildTypingSchedule,
   createPersona,
   createRng,
+  expect,
   flattenSchedule,
   generateMove,
   offCenterPoint,

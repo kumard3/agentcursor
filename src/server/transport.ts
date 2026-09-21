@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   DEFAULT_WS_PORT,
@@ -47,6 +49,12 @@ export class ExtensionTransport {
       });
       ws.on("error", () => undefined);
     });
+  }
+
+  /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
+  async listening(): Promise<number> {
+    if (!this.wss.address()) await once(this.wss, "listening");
+    return (this.wss.address() as AddressInfo).port;
   }
 
   get connected(): boolean {

@@ -170,6 +170,22 @@ export function registerTools(server: McpServer, action: ActionService): void {
   );
 
   server.registerTool(
+    "evaluate",
+    {
+      description:
+        "Run a JavaScript function in the active page and return its JSON result. Pass a function source string, e.g. `() => document.title` or `async () => (await fetch('/api/x', { method: 'POST', credentials: 'include' })).status`. Runs in the page realm via CDP, so it uses the page's own cookies/session, awaits promises, and is not blocked by the page CSP. Return value must be JSON-serializable. Use for reads and requests the UI has no button for; the debugger banner shows while it runs.",
+      inputSchema: {
+        function: z.string(),
+        args: z.array(z.any()).optional(),
+      },
+    },
+    async ({ function: fn, args }) => {
+      const result = await action.evaluate(fn, args);
+      return text(typeof result === "string" ? result : JSON.stringify(result, null, 2));
+    },
+  );
+
+  server.registerTool(
     "wait_for",
     {
       description:
@@ -311,19 +327,10 @@ function formatSnapshot(snap: PageSnapshot): string {
   const lines: string[] = [
     `URL: ${snap.url}`,
     `Title: ${snap.title}`,
-    `Viewport: ${snap.viewport.width}x${snap.viewport.height} (scroll ${snap.viewport.scrollX},${snap.viewport.scrollY}, dpr ${snap.viewport.devicePixelRatio})`,
+    `Viewport: ${snap.viewport.width}x${snap.viewport.height} scroll ${snap.viewport.scrollX},${snap.viewport.scrollY} (element @x,y = center)`,
     `Elements (${snap.elements.length}):`,
   ];
-  for (const e of snap.elements) {
-    const r = e.rect;
-    const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-    const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
-    const vis = e.visible !== undefined ? (e.visible ? " visible" : " hidden") : "";
-    const vp = e.inViewport !== undefined ? (e.inViewport ? " in-view" : " off-view") : "";
-    lines.push(
-      `  [${e.ref}] ${e.role}${name} <${e.tag}>${val} @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vis}${vp}`,
-    );
-  }
+  for (const e of snap.elements) lines.push(formatElement(e));
   if (snap.text) lines.push("", "Text:", truncate(snap.text, 4000));
   return lines.join("\n");
 }
@@ -333,8 +340,11 @@ function truncate(s: string, n: number): string {
 }
 
 function formatElement(e: PageElement): string {
-  const r = e.rect;
   const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-  const vp = e.inViewport === false ? " off-view" : "";
-  return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
+  const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
+  const tag = e.tag && e.tag !== e.role ? ` <${e.tag}>` : "";
+  const flags = `${e.visible === false ? " hidden" : ""}${e.inViewport === false ? " off-view" : ""}`;
+  const cx = Math.round(e.rect.x + e.rect.width / 2);
+  const cy = Math.round(e.rect.y + e.rect.height / 2);
+  return `[${e.ref}] ${e.role}${name}${val}${tag} @${cx},${cy}${flags}`;
 }
