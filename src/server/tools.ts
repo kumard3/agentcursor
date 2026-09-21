@@ -1,11 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ActionService } from "../action/service";
+import { readOrDiff } from "../util/diff";
 import type { PageElement, PageSnapshot } from "../protocol";
 
 function text(body: string) {
   return { content: [{ type: "text" as const, text: body }] };
 }
+
+const lastRead = new WeakMap<ActionService, string[]>();
 
 export function registerTools(server: McpServer, action: ActionService): void {
   server.registerTool(
@@ -16,11 +19,15 @@ export function registerTools(server: McpServer, action: ActionService): void {
       inputSchema: {
         maxElements: z.number().int().min(1).max(200).optional(),
         includeText: z.boolean().optional(),
+        changes: z.boolean().optional().describe("only what changed since your last read (refs stay valid)"),
       },
     },
-    async ({ maxElements, includeText }) => {
+    async ({ maxElements, includeText, changes }) => {
       const snap = await action.readPage(maxElements ?? 60, includeText ?? true);
-      return text(formatSnapshot(snap));
+      const lines = formatSnapshot(snap);
+      const body = changes ? readOrDiff(lastRead.get(action), lines) : lines.join("\n");
+      lastRead.set(action, lines);
+      return text(body);
     },
   );
 
@@ -323,7 +330,7 @@ Be patient with SPAs - combine wait_for + read_page loops.`,
   );
 }
 
-function formatSnapshot(snap: PageSnapshot): string {
+function formatSnapshot(snap: PageSnapshot): string[] {
   const lines: string[] = [
     `URL: ${snap.url}`,
     `Title: ${snap.title}`,
@@ -331,8 +338,8 @@ function formatSnapshot(snap: PageSnapshot): string {
     `Elements (${snap.elements.length}):`,
   ];
   for (const e of snap.elements) lines.push(formatElement(e));
-  if (snap.text) lines.push("", "Text:", truncate(snap.text, 4000));
-  return lines.join("\n");
+  if (snap.text) lines.push("", "Text:", ...truncate(snap.text, 4000).split("\n"));
+  return lines;
 }
 
 function truncate(s: string, n: number): string {

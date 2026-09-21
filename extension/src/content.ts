@@ -16,6 +16,20 @@ import { rand, sleep, sleepUntil, smooth } from "./timing";
 
 const overlay = new CursorOverlay();
 const refMap = new Map<string, Element>();
+// Refs stay with an element for the life of the page, so refs an agent learned
+// in an earlier read keep pointing at the same thing and reads can be diffed.
+const refOf = new WeakMap<Element, string>();
+let refCounter = 0;
+
+function refFor(el: Element): string {
+  let ref = refOf.get(el);
+  if (!ref) {
+    ref = `e${++refCounter}`;
+    refOf.set(el, ref);
+  }
+  refMap.set(ref, el);
+  return ref;
+}
 
 chrome.runtime.onMessage.addListener((msg: CommandEnvelope, _sender, reply) => {
   if (!msg?.command) return;
@@ -400,7 +414,6 @@ function collectInteractiveDeep(selector: string, max: number): Element[] {
 }
 
 function buildSnapshot(maxElements: number, includeText: boolean): PageSnapshot {
-  refMap.clear();
   const elements: PageElement[] = [];
   let n = 0;
 
@@ -416,8 +429,7 @@ function buildSnapshot(maxElements: number, includeText: boolean): PageSnapshot 
     }
     if (!isVisible(el)) continue;
 
-    const ref = `e${n + 1}`;
-    refMap.set(ref, el);
+    const ref = refFor(el);
     elements.push({
       ref,
       tag: el.tagName.toLowerCase(),

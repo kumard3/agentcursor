@@ -33,7 +33,7 @@ How it fits together: every AI app launches `agentcursor` as an ordinary stdio M
 
 ## Changelog (key updates)
 
-- **Unreleased**: E2E testing. `AgentCursor.launch()` starts a private Chrome (throwaway profile, its own copy of the extension on a free port) with its own visible cursor, so tests never touch your mouse, your browser or the MCP server on 8930, and several can run side by side. Works headed or `headless: true`. Computer use reaches the SDK too: `Desktop.open("Notes")` drives any Mac app with the real cursor and text-first reads. New agent CLI: every tool is a shell command (`agentcursor read_page`, `agentcursor desktop_click --text Save`) sharing one background service, so no tool schemas ever enter the model's context. Page reads got ~43% smaller, and the stdio tool list dropped from about 3,178 to 2,735 estimated tokens. New `expect()` with auto-retrying matchers (`toBeVisible`, `toBeHidden`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveURL`, `.not`). `navigate` now waits for the page to load, commands wait briefly for the content script after a navigation, `isVisible()`/`count()` answer immediately instead of waiting 5s, and headless screenshots no longer return the previous frame.
+- **Unreleased**: E2E testing. `AgentCursor.launch()` starts a private Chrome (throwaway profile, its own copy of the extension on a free port) with its own visible cursor, so tests never touch your mouse, your browser or the MCP server on 8930, and several can run side by side. Works headed or `headless: true`. Computer use reaches the SDK too: `Desktop.open("Notes")` drives any Mac app with the real cursor and text-first reads. New agent CLI: every tool is a shell command (`agentcursor read_page`, `agentcursor desktop_click --text Save`) sharing one background service, so no tool schemas ever enter the model's context. Refs now stay with an element across reads, so `read_page --changes` and `desktop_read --changes` return only what changed: a repeat read of an unchanged window costs ~8 estimated tokens instead of ~397. Page reads got ~43% smaller, and the stdio tool list dropped from about 3,178 to 2,735 estimated tokens. New `expect()` with auto-retrying matchers (`toBeVisible`, `toBeHidden`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveURL`, `.not`). `navigate` now waits for the page to load, commands wait briefly for the content script after a navigation, `isVisible()`/`count()` answer immediately instead of waiting 5s, and headless screenshots no longer return the previous frame.
 - **0.4.0**: Desktop control for any Mac app: `desktop_read` returns the window as compact text with `[dN]` refs from the macOS accessibility tree (a small Swift helper), then `desktop_click` / `desktop_type` / `desktop_key` / `desktop_scroll` drive the real cursor and keyboard with the same persona-based human motion. `desktop_screenshot` is a cropped, downscaled fallback. Chromium and Electron apps get their accessibility tree switched on automatically. New onboarding: `agentcursor setup` plus a local setup page that connects seven AI apps, checks permissions and tests the cursor. All AI apps now share one background service (stdio launches proxy to it), which removes the `port 8930 already in use` failure. The extension WebSocket now rejects connections from web pages.
 
 - **0.3.0**: Programmatic SDK — `import { AgentCursor } from "agentcursor"` with a Playwright-shaped locator API (`getByRole`/`getByText`/`getByLabel`/`getByPlaceholder`/`getByTestId`/css + chaining + `filter`/`nth` + `click`/`type`/`fill`/`hover`/`dragTo`/`press`/`scrollIntoView` + `boundingBox`/`isVisible`/`count`/`waitFor`), every action driven by the human cursor. `connect()` and `os()` lifecycles. Library entry split from the MCP bin so importing the package no longer boots a server; built with `tsup` (ships `.d.ts`). Locator resolution uses `@testing-library/dom` in the content script.
@@ -172,9 +172,19 @@ await ac.close();
 ```
 
 **Lifecycles**
-- `AgentCursor.launch({ headless?, args?, executablePath?, seed?, stealth? })`: start a private Chrome with its own cursor. See [E2E tests](#e2e-tests-a-playwright-alternative-with-a-visible-cursor).
-- `AgentCursor.connect({ port?, stealth?, timeoutMs? })` — attach to a running Chrome with the extension loaded (works with your real, logged-in profile).
-- `AgentCursor.os({ stealth?, ... })` — same locator API, but the real OS cursor is moved via nut-js (genuinely trusted events); page sensing still goes through the extension.
+- `AgentCursor.launch({ headless?, userDataDir?, args?, executablePath?, seed?, stealth? })`: start a browser with its own cursor. `executablePath` picks the binary (Chrome for Testing, Brave, Edge, BrowserOS); `userDataDir` drives a real, logged-in profile with no copy and leaves it intact; `headless` runs it in the background. See [Attach any browser](#attach-any-browser-real-profile-in-the-background) and [E2E tests](#e2e-tests-a-playwright-alternative-with-a-visible-cursor).
+- `AgentCursor.connect({ port?, stealth?, timeoutMs? })`: attach to a running Chrome with the extension loaded (works with your real, logged-in profile).
+- `AgentCursor.os({ stealth?, ... })`: same locator API, but the real OS cursor is moved via nut-js (genuinely trusted events); page sensing still goes through the extension.
+
+**Run JS in the page**: `ac.evaluate(fn, ...args)`, Playwright-shaped, runs in the page realm via CDP (page cookies/session, awaits promises, ignores the page CSP):
+
+```ts
+const title = await ac.evaluate(() => document.title);
+const res = await ac.evaluate(async (id) => {
+  const r = await fetch(`/api/item/${id}`, { method: "POST", credentials: "include" });
+  return { status: r.status, body: await r.text() };
+}, 42);
+```
 
 **Locators** (lazy, chainable, Playwright-shaped)
 - Find: `locator(css)`, `getByRole(role, { name })`, `getByText`, `getByLabel`, `getByPlaceholder`, `getByTestId`.
@@ -199,6 +209,7 @@ agentcursor help                        # one line per command (agentcursor tool
 agentcursor navigate https://example.com
 agentcursor read_page --includeText false
 agentcursor click_text "Buy now"
+agentcursor read_page --changes         # only what changed since your last read
 agentcursor find Submit                 # a handful of tokens instead of a whole page
 agentcursor screenshot                  # writes a file, prints the path
 
@@ -210,6 +221,16 @@ agentcursor desktop_type "hello" --submit
 ```
 
 Positionals fill a command's parameters in the order `agentcursor help` lists them, and anything can be given as `--flag value`. Dashes work too (`click-text`). `AGENTCURSOR_OUT` sets where screenshots are written.
+
+**Reading only the changes.** A `[ref]` stays with the same element for the life of the page (or until you switch apps), so a ref you learned earlier keeps working and reads can be compared. Pass `--changes` to `read_page` or `desktop_read` and you get the added and removed lines plus a count of the ones that merely moved:
+
+```
+- [e5] text "Email" <input> @293,300
++ [e5] text "Email" value="a@b.com" <input> @293,300
+(5 moved, 2 unchanged, 10 total)
+```
+
+Measured on a Finder window: a repeat read costs 29 chars (~8 estimated tokens) against 1390 (~397) for the full read. The first read, or a diff that would be bigger than the full read, returns the full read instead.
 
 ### 5. Computer use from the SDK (`Desktop`)
 
@@ -225,6 +246,40 @@ if (await d.waitForText("Saved")) console.log("done");
 ```
 
 `find()` returns only matching elements (tens of tokens), `view()` gives the structured elements, and `screenshot({ path })` is the fallback when the text is not enough. macOS only, and it needs Accessibility permission for whichever app starts it.
+
+## Attach any browser (real profile, in the background)
+
+AgentCursor drives any Chromium browser (Chrome, Chrome for Testing, Brave, Edge, BrowserOS, and mostly Arc) using **your real, logged-in profile**, in the **background** (it dispatches synthetic or CDP events, so the window need not be focused and your physical mouse is never touched). This is "computer use, but token-cheap and headless": `read_page` / `find` / `evaluate` cost tens to a few hundred tokens each versus a screenshot vision loop. `os()` is the only mode that runs in the foreground (it moves the real OS cursor).
+
+Three ways to attach:
+
+| Mode | Browser | Profile | Background | Setup |
+| --- | --- | --- | --- | --- |
+| Extension (`connect()` / MCP, default) | any Chromium | your real one | yes | Load unpacked once |
+| `agentcursor launch` / `AgentCursor.launch({ userDataDir })` | any Chromium binary | real (no copy) or throwaway | yes (`--headless`) | one command |
+| `os()` | frontmost | real | no (moves your mouse) | Accessibility grant |
+
+**A. Extension mode (recommended for agents).** Load `extension/` unpacked into the browser you want (its real profile), point your MCP client at the stdio server, and drive it. See [Load the extension](#1-load-the-extension) and [Connect via MCP](#2-connect-via-mcp-agents-cursor-claude-custom-tools-etc). Nothing is copied; the browser you already use is the one being driven.
+
+**B. `agentcursor launch` (one command, real profile, no manual extension load).** Starts a browser wired to the running service and holds it open until Ctrl-C:
+
+```bash
+# real, logged-in profile, in the background:
+agentcursor launch \
+  --user-data-dir "$HOME/Library/Application Support/Google/Chrome" \
+  --chrome "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" \
+  --headless
+
+# throwaway profile, visible window (the default):
+agentcursor launch
+```
+
+Flags: `--user-data-dir DIR` (real profile, left intact; omit for a throwaway copy), `--chrome PATH` (any Chromium binary; also `AGENTCURSOR_CHROME`), `--headless`, `--port` (WS port, default 8930). Then drive it with the normal tools (`agentcursor read_page`, `click_text`, `evaluate`, ...).
+
+**Caveats:**
+- **Profile lock:** with `--user-data-dir`, the browser must be fully quit first. Chromium will not share a running profile's data dir.
+- **Arc:** Chromium underneath, but it wraps its own launch, so `--user-data-dir` + the CDP pipe is flaky. For Arc, prefer extension mode (A).
+- Same-origin `fetch` inside `evaluate` carries that profile's cookies, so authenticated requests work against the logged-in session.
 
 ## Tools (MCP)
 
@@ -243,6 +298,7 @@ if (await d.waitForText("Saved")) console.log("done");
 | `screenshot` | Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate — see the page, then `click`/`move_to` by `x/y` (the vision loop). Also for visual assertions and agent grounding. |
 | `navigate` | Load a URL in the active tab. |
 | `get_url` | Current tab URL. |
+| `evaluate` | Run a JS function in the page (CDP `Runtime.evaluate`): page realm, uses the page's own cookies/session, awaits promises, ignores the page CSP. For reads and requests with no button (`() => document.title`, `async () => (await fetch('/api/x', { method: 'POST', credentials: 'include' })).status`). Returns the JSON result. Shows the debugger banner while it runs. |
 | `wait_for` | Wait for element ref or visible text (up to timeout). Use for resilient testing flows. |
 | `status` | Health / connection status, driver, active URL, port. Great for CI, long-running workflows, and monitoring. |
 

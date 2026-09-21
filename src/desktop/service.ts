@@ -48,6 +48,11 @@ export interface Screenshot {
 export class DesktopService {
   private view: DesktopView | null = null;
   private currentPid: number | undefined;
+  // Refs stick to the same control across reads of the same app, so an agent's
+  // earlier ref stays valid and reads can be diffed. The value is left out of
+  // the key so typing into a field does not rename it.
+  private refKeys = new Map<string, string>();
+  private refCounter = 0;
 
   constructor(private readonly persona: Persona) {}
 
@@ -89,13 +94,17 @@ export class DesktopService {
       "--max",
       String(opts.max ?? 150),
     ]);
+    if (snap.pid !== this.currentPid) {
+      this.refKeys.clear();
+      this.refCounter = 0;
+    }
     this.currentPid = snap.pid;
     this.view = {
       app: { name: snap.name, pid: snap.pid, bundleId: snap.bundleId },
       window: snap.window,
       truncated: snap.truncated,
-      elements: snap.elements.map((e, i) => ({
-        ref: `d${i + 1}`,
+      elements: snap.elements.map((e) => ({
+        ref: this.refFor(e),
         role: e.role,
         name: e.name,
         value: e.value,
@@ -214,6 +223,16 @@ export class DesktopService {
       await sleep(150);
       from = to;
     }
+  }
+
+  private refFor(e: { role: string; name: string; x: number; y: number }): string {
+    const key = `${e.role}|${e.name}|${Math.round(e.x / 8)},${Math.round(e.y / 8)}`;
+    let ref = this.refKeys.get(key);
+    if (!ref) {
+      ref = `d${++this.refCounter}`;
+      this.refKeys.set(key, ref);
+    }
+    return ref;
   }
 
   private element(ref: string): DesktopElement {
