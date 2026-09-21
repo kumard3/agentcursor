@@ -361,7 +361,7 @@ function sampleTraits(rng) {
     precision: rng.range(0.1, 0.26),
     dwellScale: rng.range(0.7, 1.5),
     pressScale: rng.range(0.75, 1.4),
-    wpm: rng.range(180, 420),
+    wpm: rng.range(62, 155),
     errorRate: rng.range(0, 0.05),
     reactionMs: rng.range(180, 520),
     thinkScale: rng.range(0.7, 1.5),
@@ -824,8 +824,8 @@ var KEY_ALIASES = {
   "\\": "Backslash",
   "`": "Grave"
 };
-function parseKeyCombo(combo) {
-  const parts = combo.split("+").map((p) => p.trim()).filter(Boolean);
+function parseKeyCombo(combo2) {
+  const parts = combo2.split("+").map((p) => p.trim()).filter(Boolean);
   if (!parts.length) throw new Error("Empty key combo");
   return parts.map((part) => {
     const lower = part.toLowerCase();
@@ -833,11 +833,11 @@ function parseKeyCombo(combo) {
     if (/^[a-z]$/.test(lower)) return lower.toUpperCase();
     if (/^[0-9]$/.test(lower)) return `Num${lower}`;
     if (/^f([1-9]|1[0-9]|2[0-4])$/.test(lower)) return lower.toUpperCase();
-    throw new Error(`Unknown key "${part}" in "${combo}"`);
+    throw new Error(`Unknown key "${part}" in "${combo2}"`);
   });
 }
-async function pressCombo(nut, combo, holdMs) {
-  const keys = parseKeyCombo(combo).map((name) => nut.Key[name]);
+async function pressCombo(nut, combo2, holdMs) {
+  const keys = parseKeyCombo(combo2).map((name) => nut.Key[name]);
   await nut.keyboard.pressKey(...keys);
   await sleep(holdMs);
   await nut.keyboard.releaseKey(...keys.reverse());
@@ -1420,12 +1420,12 @@ import { execFile } from "child_process";
 import { existsSync as existsSync2 } from "fs";
 import { fileURLToPath as fileURLToPath2 } from "url";
 var helperPath = fileURLToPath2(new URL("./native/agentcursor-ax", import.meta.url));
-function ax(args, timeoutMs = 2e4) {
+function ax(args, timeoutMs = 2e4, stdin) {
   if (process.platform !== "darwin") {
     return Promise.reject(new Error("Desktop control currently supports macOS only."));
   }
   return new Promise((resolve, reject) => {
-    execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+    const child = execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
       if (err?.code === "ENOENT") {
         return reject(new Error(`Desktop helper missing at ${helperPath}. Run \`pnpm build\`.`));
       }
@@ -1438,24 +1438,169 @@ function ax(args, timeoutMs = 2e4) {
       if (parsed?.error) return reject(new Error(parsed.error));
       resolve(parsed);
     });
+    if (stdin !== void 0) child.stdin?.end(stdin);
   });
 }
 var appArgs = (app) => app === void 0 ? [] : typeof app === "number" ? ["--pid", String(app)] : ["--app", app];
 
+// src/desktop/overlay.ts
+import { spawn as spawn2 } from "child_process";
+var CursorOverlay = class {
+  constructor(opts = {}) {
+    this.opts = opts;
+  }
+  opts;
+  proc = null;
+  child() {
+    if (!this.proc || this.proc.exitCode !== null) {
+      const args = ["overlay"];
+      if (this.opts.color) args.push("--color", this.opts.color);
+      if (this.opts.label) args.push("--label", this.opts.label);
+      this.proc = spawn2(helperPath, args, { stdio: ["pipe", "ignore", "ignore"] });
+      this.proc.on("error", () => this.proc = null);
+    }
+    return this.proc;
+  }
+  at(p) {
+    this.child().stdin?.write(`${Math.round(p.x)} ${Math.round(p.y)}
+`);
+  }
+  /** Follows a move with the same timing the posted events use. */
+  async play(samples) {
+    const start = Date.now();
+    for (const s of samples) {
+      const wait = s.t - (Date.now() - start);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      this.at(s);
+    }
+  }
+  close() {
+    this.proc?.stdin?.end("bye\n");
+    this.proc = null;
+  }
+};
+
+// src/desktop/post.ts
+function post(pid, plan) {
+  const args = pid === void 0 ? ["post"] : ["post", "--pid", String(pid)];
+  return ax(args, 12e4, JSON.stringify(plan));
+}
+var FLAGS = { cmd: 1 << 20, shift: 1 << 17, alt: 1 << 19, ctrl: 1 << 18, fn: 1 << 23 };
+var CODES = {
+  a: 0,
+  s: 1,
+  d: 2,
+  f: 3,
+  h: 4,
+  g: 5,
+  z: 6,
+  x: 7,
+  c: 8,
+  v: 9,
+  b: 11,
+  q: 12,
+  w: 13,
+  e: 14,
+  r: 15,
+  y: 16,
+  t: 17,
+  o: 31,
+  u: 32,
+  i: 34,
+  p: 35,
+  l: 37,
+  j: 38,
+  k: 40,
+  n: 45,
+  m: 46,
+  "1": 18,
+  "2": 19,
+  "3": 20,
+  "4": 21,
+  "5": 23,
+  "6": 22,
+  "7": 26,
+  "8": 28,
+  "9": 25,
+  "0": 29,
+  enter: 36,
+  return: 36,
+  tab: 48,
+  space: 49,
+  backspace: 51,
+  delete: 51,
+  escape: 53,
+  esc: 53,
+  left: 123,
+  right: 124,
+  down: 125,
+  up: 126,
+  home: 115,
+  end: 119,
+  pageup: 116,
+  pagedown: 121
+};
+function combo(keys) {
+  let flags = 0;
+  let code;
+  for (const raw of keys.toLowerCase().split("+")) {
+    const part = raw.trim();
+    if (part === "cmd" || part === "command" || part === "meta") flags |= FLAGS.cmd;
+    else if (part === "shift") flags |= FLAGS.shift;
+    else if (part === "alt" || part === "option") flags |= FLAGS.alt;
+    else if (part === "ctrl" || part === "control") flags |= FLAGS.ctrl;
+    else code = CODES[part];
+  }
+  if (code === void 0) throw new Error(`agentcursor: no key code for '${keys}'`);
+  return { code, flags, delayMs: 0 };
+}
+function keyOps(schedule) {
+  return schedule.map(
+    (op) => op.t === "back" ? { code: CODES.backspace, delayMs: op.delayMs } : { ch: op.ch, delayMs: op.delayMs }
+  );
+}
+
 // src/desktop/service.ts
 var run = promisify(execFile2);
 var DesktopService = class {
-  constructor(persona) {
+  constructor(persona, opts = {}) {
     this.persona = persona;
+    this.opts = opts;
   }
   persona;
+  opts;
   view = null;
   currentPid;
+  /** This service's own cursor, used in background mode instead of the system pointer. */
+  pos = { x: 0, y: 0 };
+  overlay = null;
   // Refs stick to the same control across reads of the same app, so an agent's
   // earlier ref stays valid and reads can be diffed. The value is left out of
   // the key so typing into a field does not rename it.
   refKeys = /* @__PURE__ */ new Map();
   refCounter = 0;
+  get background() {
+    return this.opts.background ?? false;
+  }
+  get pointer() {
+    const want = this.opts.showCursor;
+    if (!want || !this.background) return null;
+    this.overlay ??= new CursorOverlay(typeof want === "object" ? want : {});
+    return this.overlay;
+  }
+  /** Stops drawing this session's cursor. */
+  close() {
+    this.overlay?.close();
+    this.overlay = null;
+  }
+  /** Where this service's cursor is (background mode); the system pointer otherwise. */
+  cursor() {
+    if (this.background) return Promise.resolve(this.pos);
+    return loadNut().then(async (nut) => {
+      const p = await nut.mouse.getPosition();
+      return { x: p.x, y: p.y };
+    });
+  }
   permissions() {
     return ax(["permissions"]);
   }
@@ -1466,6 +1611,7 @@ var DesktopService = class {
     return ax(["apps"]);
   }
   async open(app) {
+    if (this.background) return this.openInBackground(app);
     const before = (await this.apps()).find((a) => a.active)?.pid;
     await run("open", ["-a", app]).catch((e) => {
       throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
@@ -1482,6 +1628,28 @@ var DesktopService = class {
       await sleep(250);
     }
     throw new Error(`Opened "${app}" but it did not come to the front.`);
+  }
+  /** Launch or attach without bringing the app to the front (`open -g`). */
+  async openInBackground(app) {
+    const running = (a) => {
+      const name = a.name.toLowerCase();
+      const want = app.toLowerCase();
+      return name === want || name.includes(want) || want.includes(name);
+    };
+    let found = (await this.apps()).find(running);
+    if (!found) {
+      await run("open", ["-g", "-a", app]).catch((e) => {
+        throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
+      });
+      for (let i = 0; i < 40 && !found; i++) {
+        await sleep(250);
+        found = (await this.apps()).find(running);
+      }
+    }
+    if (!found) throw new Error(`Opened "${app}" but it did not start.`);
+    this.currentPid = found.pid;
+    this.view = null;
+    return found;
   }
   async read(opts = {}) {
     const snap = await ax([
@@ -1520,8 +1688,16 @@ var DesktopService = class {
     await this.front(target2.pid);
     await this.moveHuman(target2.point, target2.width);
     const traits = this.persona.traits();
-    await sleep(sampleDwellMs(this.persona.rng, traits.dwellScale));
-    await pressButton(await loadNut(), t.button ?? "left", samplePressMs(this.persona.rng, traits.pressScale), t.double);
+    const dwellMs = sampleDwellMs(this.persona.rng, traits.dwellScale);
+    const pressMs = samplePressMs(this.persona.rng, traits.pressScale);
+    if (this.background) {
+      await post(target2.pid ?? this.currentPid, {
+        click: { x: target2.point.x, y: target2.point.y, button: t.button, double: t.double, dwellMs, pressMs }
+      });
+    } else {
+      await sleep(dwellMs);
+      await pressButton(await loadNut(), t.button ?? "left", pressMs, t.double);
+    }
     return describe2(target2);
   }
   async move(t) {
@@ -1533,25 +1709,36 @@ var DesktopService = class {
   async type(opts) {
     if (opts.ref || opts.text || typeof opts.x === "number") await this.click(opts);
     else await this.front(this.currentPid);
+    this.persona.tick();
+    const schedule = this.persona.keySchedule(opts.value);
+    if (this.background) {
+      const keys = [
+        ...opts.clear ? [{ ...combo("cmd+a"), delayMs: 60 }, { ...combo("backspace"), delayMs: 40 }] : [],
+        ...keyOps(schedule) ?? [],
+        ...opts.submit ? [{ ...combo("enter"), delayMs: samplePressMs(this.persona.rng) }] : []
+      ];
+      await post(this.currentPid, { keys });
+      return;
+    }
     const nut = await loadNut();
     if (opts.clear) {
       await pressCombo(nut, process.platform === "darwin" ? "cmd+a" : "ctrl+a", 60);
       await pressCombo(nut, "backspace", 40);
     }
-    this.persona.tick();
     const base = 12e3 / this.persona.traits().wpm;
-    await typeText(nut, opts.value, {
-      schedule: this.persona.keySchedule(opts.value),
-      perKeyMinMs: base * 0.6,
-      perKeyMaxMs: base * 1.8
-    });
+    await typeText(nut, opts.value, { schedule, perKeyMinMs: base * 0.6, perKeyMaxMs: base * 1.8 });
     if (opts.submit) await pressCombo(nut, "enter", samplePressMs(this.persona.rng));
   }
-  async key(combo) {
+  async key(combo2) {
     await this.front(this.currentPid);
     this.persona.tick();
     await sleep(this.persona.thinkTimeMs(0));
-    await pressCombo(await loadNut(), combo, samplePressMs(this.persona.rng, this.persona.traits().pressScale));
+    const pressMs = samplePressMs(this.persona.rng, this.persona.traits().pressScale);
+    if (this.background) {
+      await post(this.currentPid, { keys: [{ ...combo(combo2), delayMs: 0 }] });
+      return;
+    }
+    await pressCombo(await loadNut(), combo2, pressMs);
   }
   async scroll(opts) {
     if (opts.ref || opts.text || typeof opts.x === "number") {
@@ -1563,7 +1750,8 @@ var DesktopService = class {
     }
     this.persona.tick();
     const steps = Math.max(3, Math.round(Math.abs(opts.dy || opts.dx || 0) / this.persona.rng.range(80, 140)));
-    await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
+    if (this.background) await post(this.currentPid, { scroll: { dx: opts.dx ?? 0, dy: opts.dy, steps } });
+    else await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
     this.view = null;
   }
   async screenshot(opts = {}) {
@@ -1650,15 +1838,21 @@ var DesktopService = class {
     };
   }
   async moveHuman(to, width) {
-    const nut = await loadNut();
-    const pos = await nut.mouse.getPosition();
-    const from = { x: pos.x, y: pos.y };
+    const from = await this.cursor();
     this.persona.tick();
     await sleep(this.persona.thinkTimeMs(distance(from, to)));
-    await playPath(nut, generateMove(from, to, this.persona.moveOptions(width)));
+    const samples = generateMove(from, to, this.persona.moveOptions(width));
+    if (this.background) {
+      const drawn = this.pointer?.play(samples);
+      await post(this.currentPid, { moves: samples });
+      await drawn;
+      this.pos = to;
+      return;
+    }
+    await playPath(await loadNut(), samples);
   }
   async front(pid) {
-    if (pid) await ax(["activate", "--pid", String(pid)]).catch(() => void 0);
+    if (pid && !this.background) await ax(["activate", "--pid", String(pid)]).catch(() => void 0);
   }
 };
 function describe2(target2) {
@@ -1697,7 +1891,12 @@ var Desktop = class _Desktop {
   }
   service;
   static async open(app, options = {}) {
-    const d = new _Desktop(new DesktopService(createPersona(options.seed)));
+    const d = new _Desktop(
+      new DesktopService(createPersona(options.seed), {
+        background: options.background,
+        showCursor: options.showCursor
+      })
+    );
     if (app) await d.service.open(app);
     return d;
   }
@@ -1742,8 +1941,8 @@ var Desktop = class _Desktop {
   async type(value, opts = {}) {
     await this.service.type({ ...opts.into ? target(opts.into) : {}, value, clear: opts.clear, submit: opts.submit });
   }
-  key(combo) {
-    return this.service.key(combo);
+  key(combo2) {
+    return this.service.key(combo2);
   }
   async scroll(opts) {
     await this.service.scroll({ ...opts.over ? target(opts.over) : {}, dy: opts.dy, dx: opts.dx });
@@ -1753,6 +1952,10 @@ var Desktop = class _Desktop {
     const shot = await this.service.screenshot(opts);
     if (opts.path) await writeFile2(opts.path, Buffer.from(shot.data, "base64"));
     return opts.path ?? `data:${shot.mimeType};base64,${shot.data}`;
+  }
+  /** Stops drawing this session's cursor. */
+  close() {
+    this.service.close();
   }
   /** Waits for text to appear in the window. Returns false on timeout. */
   async waitForText(text, opts = {}) {
@@ -1828,6 +2031,7 @@ function build(target2, timeout, negate) {
 export {
   ActionService,
   AgentCursor,
+  CursorOverlay,
   Desktop,
   DesktopService,
   ExtensionDriver,

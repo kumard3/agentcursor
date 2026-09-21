@@ -610,6 +610,28 @@ interface AxPermissions {
     screenRecording: boolean;
 }
 
+interface OverlayOptions {
+    /** Hex colour of this session's cursor, e.g. "#4ade80". */
+    color?: string;
+    /** Name shown next to it, so two tests are told apart on screen. */
+    label?: string;
+}
+/**
+ * A cursor of this session's own, drawn above every window and click-through.
+ * Background input does not move the system pointer, so this is what makes a
+ * background run watchable: one per session, each with its own colour.
+ */
+declare class CursorOverlay {
+    private readonly opts;
+    private proc;
+    constructor(opts?: OverlayOptions);
+    private child;
+    at(p: Point): void;
+    /** Follows a move with the same timing the posted events use. */
+    play(samples: CursorSample[]): Promise<void>;
+    close(): void;
+}
+
 interface DesktopElement {
     ref: string;
     role: string;
@@ -637,17 +659,36 @@ interface Screenshot {
     mimeType: string;
     note: string;
 }
+interface DesktopServiceOptions {
+    /** Post input straight to the target process: the user's pointer and focus are left alone,
+     * each service keeps its own cursor, and several can run at once. */
+    background?: boolean;
+    /** Draw this session's cursor on screen (background mode). Off unless asked for. */
+    showCursor?: boolean | OverlayOptions;
+}
 declare class DesktopService {
     private readonly persona;
+    private readonly opts;
     private view;
     private currentPid;
+    /** This service's own cursor, used in background mode instead of the system pointer. */
+    private pos;
+    private overlay;
     private refKeys;
     private refCounter;
-    constructor(persona: Persona);
+    constructor(persona: Persona, opts?: DesktopServiceOptions);
+    get background(): boolean;
+    private get pointer();
+    /** Stops drawing this session's cursor. */
+    close(): void;
+    /** Where this service's cursor is (background mode); the system pointer otherwise. */
+    cursor(): Promise<Point>;
     permissions(): Promise<AxPermissions>;
     requestPermission(kind: "accessibility" | "screen"): Promise<Partial<AxPermissions>>;
     apps(): Promise<AxApp[]>;
     open(app: string): Promise<AxApp>;
+    /** Launch or attach without bringing the app to the front (`open -g`). */
+    private openInBackground;
     read(opts?: {
         app?: string;
         max?: number;
@@ -687,6 +728,16 @@ declare class DesktopService {
 interface DesktopOptions {
     /** Persona seed. Same seed reproduces the same motion and typing. */
     seed?: number;
+    /**
+     * Post input straight to the target app: your own pointer never moves, the app is never
+     * raised, and every Desktop gets a cursor of its own, so runs can happen while you work.
+     */
+    background?: boolean;
+    /** Draw this session's cursor on screen, optionally with a colour and name. */
+    showCursor?: boolean | {
+        color?: string;
+        label?: string;
+    };
 }
 /** A [dN] ref, or the visible text/label of a control. */
 type DesktopQuery = string | {
@@ -753,6 +804,8 @@ declare class Desktop {
         maxWidth?: number;
         path?: string;
     }): Promise<string>;
+    /** Stops drawing this session's cursor. */
+    close(): void;
     /** Waits for text to appear in the window. Returns false on timeout. */
     waitForText(text: string, opts?: {
         app?: string;
@@ -891,4 +944,4 @@ declare class OsCursorDriver implements BrowserDriver {
     private geometry;
 }
 
-export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, type CursorSample, type DeliveryMode, Desktop, type DesktopOptions, type DesktopQuery, DesktopService, type Expectation, ExtensionDriver, ExtensionTransport, type KeyOp, type LaunchOptions, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type PageElement, type PageSnapshot, Persona, type PersonaInfo, type PersonaOptions, type PersonaTraits, type Point, type Rect, buildTypingSchedule, createPersona, createRng, expect, flattenSchedule, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs, scheduleToKeystrokes };
+export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, CursorOverlay, type CursorSample, type DeliveryMode, Desktop, type DesktopOptions, type DesktopQuery, DesktopService, type DesktopServiceOptions, type Expectation, ExtensionDriver, ExtensionTransport, type KeyOp, type LaunchOptions, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type OverlayOptions, type PageElement, type PageSnapshot, Persona, type PersonaInfo, type PersonaOptions, type PersonaTraits, type Point, type Rect, buildTypingSchedule, createPersona, createRng, expect, flattenSchedule, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs, scheduleToKeystrokes };
