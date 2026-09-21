@@ -23,6 +23,22 @@ describe("evaluateSpec", () => {
     expect(evaluateSpec([{ kind: "css", value: ".row" }]).length).toBe(2);
   });
 
+  it("matches text by substring, case-insensitively, like Playwright", () => {
+    expect(evaluateSpec([{ kind: "text", value: "Pro" }]).length).toBe(1);
+    expect(evaluateSpec([{ kind: "text", value: "pro plan" }]).length).toBe(1);
+  });
+
+  it("honours exact when asked", () => {
+    expect(evaluateSpec([{ kind: "text", value: "Pro", exact: true }]).length).toBe(0);
+    expect(evaluateSpec([{ kind: "text", value: "Pro plan", exact: true }]).length).toBe(1);
+  });
+
+  it("matches a role's accessible name by substring", () => {
+    const els = evaluateSpec([{ kind: "role", value: "button", name: "Delete" }]);
+    expect(els.length).toBe(1);
+    expect(els[0]?.getAttribute("aria-label")).toBe("Delete row");
+  });
+
   it("role + name", () => {
     const els = evaluateSpec([{ kind: "role", value: "button", name: "Delete row" }]);
     expect(els.length).toBe(1);

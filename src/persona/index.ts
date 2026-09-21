@@ -151,7 +151,7 @@ function sampleTraits(rng: Rng): PersonaTraits {
     precision: rng.range(0.1, 0.26),
     dwellScale: rng.range(0.7, 1.5),
     pressScale: rng.range(0.75, 1.4),
-    wpm: rng.range(180, 420),
+    wpm: rng.range(62, 155),
     errorRate: rng.range(0, 0.05),
     reactionMs: rng.range(180, 520),
     thinkScale: rng.range(0.7, 1.5),

@@ -6,15 +6,20 @@ type QueryStep = Extract<
   { kind: "css" | "role" | "text" | "label" | "placeholder" | "testid" }
 >;
 
+const substring = (s: string) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+
 function queryWithin(scope: Element, step: QueryStep): Element[] {
   if (step.kind === "css") {
     return Array.from(scope.querySelectorAll(step.value));
   }
   const w = within(scope as HTMLElement);
-  const exact = (step as { exact?: boolean }).exact ?? true;
+  // Playwright's default: case-insensitive substring, whitespace normalized.
+  const exact = (step as { exact?: boolean }).exact ?? false;
   switch (step.kind) {
     case "role":
-      return w.queryAllByRole(step.value, { name: step.name });
+      return w.queryAllByRole(step.value, {
+        name: step.name === undefined ? undefined : exact ? step.name : substring(step.name),
+      });
     case "text":
       return w.queryAllByText(step.value, { exact });
     case "label":
@@ -22,7 +27,7 @@ function queryWithin(scope: Element, step: QueryStep): Element[] {
     case "placeholder":
       return w.queryAllByPlaceholderText(step.value, { exact });
     case "testid":
-      return w.queryAllByTestId(step.value, { exact });
+      return w.queryAllByTestId(step.value, { exact: true });
   }
 }
 
