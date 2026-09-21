@@ -119,7 +119,8 @@ function usage(tools: ToolInfo[], full: boolean): string {
   }
   lines.push(
     "",
-    "Also: agentcursor setup | serve | mcp (stdio MCP server) | tools (same list with full descriptions)",
+    "Also: agentcursor launch [--user-data-dir DIR] [--chrome PATH] [--headless] (attach a real-profile browser in the background)",
+    "      agentcursor setup | serve | mcp (stdio MCP server) | tools (same list with full descriptions)",
     "Screenshots are written to a file and the path is printed. AGENTCURSOR_OUT sets the directory.",
     "",
   );

@@ -457,6 +457,10 @@ interface LaunchOptions {
     userDataDir?: string;
     /** Extra Chrome flags, e.g. ["--window-size=900,800", "--window-position=0,0"]. */
     args?: string[];
+    /** Expose the page to the macOS accessibility tree, so computer use (Desktop) can read and
+     * click it. Chrome otherwise builds that tree only for a screen reader, and a desktop read
+     * sees the toolbar but no page content. */
+    accessibility?: boolean;
 }
 
 interface LocatorContext {
@@ -637,6 +641,8 @@ declare class DesktopService {
     private readonly persona;
     private view;
     private currentPid;
+    private refKeys;
+    private refCounter;
     constructor(persona: Persona);
     permissions(): Promise<AxPermissions>;
     requestPermission(kind: "accessibility" | "screen"): Promise<Partial<AxPermissions>>;
@@ -671,6 +677,7 @@ declare class DesktopService {
         maxWidth?: number;
     }): Promise<Screenshot>;
     wiggle(): Promise<void>;
+    private refFor;
     private element;
     private resolve;
     private moveHuman;

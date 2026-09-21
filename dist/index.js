@@ -1,12 +1,130 @@
 #!/usr/bin/env node
 
-// src/cli/run.ts
-import { writeFile } from "fs/promises";
-import { tmpdir as tmpdir3 } from "os";
-import { join as join3 } from "path";
+// src/sdk/launch.ts
+import { spawn } from "child_process";
+import { once } from "events";
+import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { fileURLToPath } from "url";
+var CHROME_PATHS = {
+  darwin: [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium"
+  ],
+  linux: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"],
+  win32: [
+    `${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env["PROGRAMFILES(X86)"]}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
+  ]
+};
+function findChrome(explicit) {
+  const path = explicit ?? process.env.AGENTCURSOR_CHROME ?? (CHROME_PATHS[process.platform] ?? []).find(existsSync);
+  if (!path || !existsSync(path)) {
+    throw new Error("agentcursor: Chrome not found. Pass { executablePath } or set AGENTCURSOR_CHROME.");
+  }
+  return path;
+}
+function extensionDir() {
+  for (const rel of ["../extension", "../../extension"]) {
+    const dir = fileURLToPath(new URL(rel, import.meta.url));
+    if (existsSync(join(dir, "dist", "service-worker.js"))) return dir;
+  }
+  throw new Error("agentcursor: built extension not found. Run `pnpm build` first.");
+}
+async function launchBrowser(port, options = {}) {
+  const chrome = findChrome(options.executablePath);
+  const realProfile = options.userDataDir;
+  const profile = realProfile ?? mkdtempSync(join(tmpdir(), "agentcursor-"));
+  const ext = mkdtempSync(join(tmpdir(), "agentcursor-ext-"));
+  const src = extensionDir();
+  for (const part of ["manifest.json", "dist", "icons"]) cpSync(join(src, part), join(ext, part), { recursive: true });
+  writeFileSync(join(ext, "launch.json"), JSON.stringify({ port }));
+  const args = [
+    "--remote-debugging-pipe",
+    `--user-data-dir=${profile}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-search-engine-choice-screen",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    ...options.headless ? ["--headless=new"] : [],
+    ...options.accessibility ? ["--force-renderer-accessibility"] : [],
+    ...options.args ?? [],
+    "about:blank"
+  ];
+  const proc = spawn(chrome, args, { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  const cdp = new PipeCdp(proc.stdio[3], proc.stdio[4]);
+  const exited = once(proc, "exit");
+  const cleanup = async () => {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      await cdp.send("Browser.close", {}, 3e3).catch(() => proc.kill());
+      await Promise.race([exited, delay(5e3).then(() => proc.kill("SIGKILL"))]);
+    }
+    rmSync(ext, { recursive: true, force: true, maxRetries: 5 });
+    if (!realProfile) rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+  };
+  try {
+    await Promise.race([
+      cdp.send("Extensions.loadUnpacked", { path: ext }, 15e3),
+      exited.then(() => {
+        throw new Error(`agentcursor: Chrome exited during launch (${chrome})`);
+      })
+    ]);
+  } catch (err) {
+    await cleanup();
+    throw err;
+  }
+  return { close: cleanup };
+}
+var delay = (ms) => new Promise((r) => setTimeout(r, ms));
+var PipeCdp = class {
+  constructor(out, input) {
+    this.out = out;
+    input.setEncoding("utf8");
+    input.on("data", (chunk) => this.onData(chunk));
+    input.on("error", () => void 0);
+    out.on("error", () => void 0);
+  }
+  out;
+  nextId = 1;
+  buf = "";
+  pending = /* @__PURE__ */ new Map();
+  send(method, params, timeoutMs) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`agentcursor: CDP ${method} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => (clearTimeout(timer), resolve(v)),
+        reject: (e) => (clearTimeout(timer), reject(e))
+      });
+      this.out.write(`${JSON.stringify({ id, method, params })}\0`);
+    });
+  }
+  onData(chunk) {
+    this.buf += chunk;
+    let end;
+    while ((end = this.buf.indexOf("\0")) >= 0) {
+      const msg = JSON.parse(this.buf.slice(0, end));
+      this.buf = this.buf.slice(end + 1);
+      const entry = msg.id === void 0 ? void 0 : this.pending.get(msg.id);
+      if (!entry) continue;
+      this.pending.delete(msg.id);
+      if (msg.error) entry.reject(new Error(`agentcursor: CDP ${msg.error.message}`));
+      else entry.resolve(msg.result);
+    }
+  }
+};
 
 // src/server/proxy.ts
-import { spawn } from "child_process";
+import { spawn as spawn2 } from "child_process";
 import { openSync } from "fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -26,9 +144,9 @@ var rand = (min, max) => min + Math.random() * (max - min);
 
 // src/server/create.ts
 import { readFileSync, statSync } from "fs";
-import { tmpdir as tmpdir2 } from "os";
-import { join as join2 } from "path";
-import { fileURLToPath as fileURLToPath2 } from "url";
+import { tmpdir as tmpdir3 } from "os";
+import { join as join3 } from "path";
+import { fileURLToPath as fileURLToPath3 } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // src/protocol/index.ts
@@ -260,27 +378,27 @@ function buildTypingSchedule(text3, rng, traits) {
   for (let i = 0; i < text3.length; i++) {
     const ch = text3[i];
     const prev = text3[i - 1];
-    let delay = Math.max(8, rng.gaussian(base2, base2 * 0.35));
+    let delay2 = Math.max(8, rng.gaussian(base2, base2 * 0.35));
     if (first) {
-      delay += traits.reactionMs * rng.range(0.6, 1.1);
+      delay2 += traits.reactionMs * rng.range(0.6, 1.1);
       first = false;
     } else if (prev === " ") {
-      delay += base2 * rng.range(1.5, 3.5);
+      delay2 += base2 * rng.range(1.5, 3.5);
     } else if (prev && ".?!".includes(prev)) {
-      delay += base2 * rng.range(3, 6);
+      delay2 += base2 * rng.range(3, 6);
     } else if (rng.bool(0.06)) {
-      delay += base2 * rng.range(2, 5);
+      delay2 += base2 * rng.range(2, 5);
     }
     if (/[a-zA-Z]/.test(ch) && rng.bool(traits.errorRate)) {
       const wrong = wrongChar(ch, rng);
       if (wrong) {
-        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay) });
+        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay2) });
         ops.push({ t: "back", delayMs: Math.round(base2 * rng.range(2, 5)) });
         ops.push({ t: "key", ch, delayMs: Math.round(base2 * rng.range(0.8, 1.4)) });
         continue;
       }
     }
-    ops.push({ t: "key", ch, delayMs: Math.round(delay) });
+    ops.push({ t: "key", ch, delayMs: Math.round(delay2) });
   }
   return ops;
 }
@@ -545,8 +663,8 @@ var ActionService = class {
     });
     return { matched, point };
   }
-  async pressKey(key, stealth) {
-    await this.driver.pressKey(key, mode(stealth));
+  async pressKey(key2, stealth) {
+    await this.driver.pressKey(key2, mode(stealth));
   }
   async ensureStart() {
     if (this.lastPos) return this.lastPos;
@@ -634,8 +752,8 @@ function rankByText(elements, query) {
 // src/desktop/service.ts
 import { execFile as execFile2 } from "child_process";
 import { mkdtemp, readFile, rm } from "fs/promises";
-import { tmpdir } from "os";
-import { join } from "path";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join2 } from "path";
 import { promisify } from "util";
 
 // src/drivers/nut.ts
@@ -768,10 +886,10 @@ async function pressCombo(nut, combo, holdMs) {
 
 // src/desktop/ax.ts
 import { execFile } from "child_process";
-import { existsSync } from "fs";
-import { fileURLToPath } from "url";
-var helperPath = fileURLToPath(new URL("./native/agentcursor-ax", import.meta.url));
-var desktopSupported = () => process.platform === "darwin" && existsSync(helperPath);
+import { existsSync as existsSync2 } from "fs";
+import { fileURLToPath as fileURLToPath2 } from "url";
+var helperPath = fileURLToPath2(new URL("./native/agentcursor-ax", import.meta.url));
+var desktopSupported = () => process.platform === "darwin" && existsSync2(helperPath);
 function ax(args, timeoutMs = 2e4) {
   if (process.platform !== "darwin") {
     return Promise.reject(new Error("Desktop control currently supports macOS only."));
@@ -803,6 +921,11 @@ var DesktopService = class {
   persona;
   view = null;
   currentPid;
+  // Refs stick to the same control across reads of the same app, so an agent's
+  // earlier ref stays valid and reads can be diffed. The value is left out of
+  // the key so typing into a field does not rename it.
+  refKeys = /* @__PURE__ */ new Map();
+  refCounter = 0;
   permissions() {
     return ax(["permissions"]);
   }
@@ -837,13 +960,17 @@ var DesktopService = class {
       "--max",
       String(opts.max ?? 150)
     ]);
+    if (snap.pid !== this.currentPid) {
+      this.refKeys.clear();
+      this.refCounter = 0;
+    }
     this.currentPid = snap.pid;
     this.view = {
       app: { name: snap.name, pid: snap.pid, bundleId: snap.bundleId },
       window: snap.window,
       truncated: snap.truncated,
-      elements: snap.elements.map((e, i) => ({
-        ref: `d${i + 1}`,
+      elements: snap.elements.map((e) => ({
+        ref: this.refFor(e),
         role: e.role,
         name: e.name,
         value: e.value,
@@ -922,8 +1049,8 @@ var DesktopService = class {
       rect = { x: info.window.x, y: info.window.y, width: info.window.w, height: info.window.h };
       label = `${info.name} window`;
     }
-    const dir = await mkdtemp(join(tmpdir(), "agentcursor-shot-"));
-    const file = join(dir, "shot.jpg");
+    const dir = await mkdtemp(join2(tmpdir2(), "agentcursor-shot-"));
+    const file = join2(dir, "shot.jpg");
     try {
       await run("screencapture", ["-x", "-t", "jpg", `-R${rect.x},${rect.y},${rect.width},${rect.height}`, file]);
       const maxWidth = opts.maxWidth ?? 1024;
@@ -954,6 +1081,15 @@ var DesktopService = class {
       await sleep(150);
       from = to;
     }
+  }
+  refFor(e) {
+    const key2 = `${e.role}|${e.name}|${Math.round(e.x / 8)},${Math.round(e.y / 8)}`;
+    let ref = this.refKeys.get(key2);
+    if (!ref) {
+      ref = `d${++this.refCounter}`;
+      this.refKeys.set(key2, ref);
+    }
+    return ref;
   }
   element(ref) {
     const el = this.view?.elements.find((e) => e.ref === ref);
@@ -1089,8 +1225,8 @@ var ExtensionDriver = class {
   async drag(args) {
     await this.transport.send({ kind: "drag", ...args }, 6e4);
   }
-  async pressKey(key, mode2) {
-    await this.transport.send({ kind: "pressKey", key, mode: mode2 }, 1e4);
+  async pressKey(key2, mode2) {
+    await this.transport.send({ kind: "pressKey", key: key2, mode: mode2 }, 1e4);
   }
   async resolveLocator(spec, opts) {
     return await this.transport.send(
@@ -1176,8 +1312,8 @@ var OsCursorDriver = class {
     await sleep(rand(40, 90));
     await nut.mouse.releaseButton(button);
   }
-  async pressKey(key, mode2) {
-    await this.transport.send({ kind: "pressKey", key, mode: mode2 });
+  async pressKey(key2, mode2) {
+    await this.transport.send({ kind: "pressKey", key: key2, mode: mode2 });
   }
   // Locator resolution is DOM-side, so it goes through the extension bridge even
   // in OS mode (only the cursor itself is driven by nut-js).
@@ -1222,6 +1358,41 @@ var OsCursorDriver = class {
 
 // src/server/desktop-tools.ts
 import { z } from "zod";
+
+// src/util/diff.ts
+function diffRead(previous, next) {
+  const pending = /* @__PURE__ */ new Map();
+  for (const line of previous) {
+    const list = pending.get(key(line));
+    if (list) list.push(line);
+    else pending.set(key(line), [line]);
+  }
+  const added = [];
+  let moved = 0;
+  let unchanged = 0;
+  for (const line of next) {
+    const list = pending.get(key(line));
+    const match = list?.shift();
+    if (match === void 0) added.push(line);
+    else if (match === line) unchanged++;
+    else moved++;
+  }
+  const removed = [...pending.values()].flat();
+  if (!added.length && !removed.length && !moved) return "no change since the last read";
+  const summary = `(${moved ? `${moved} moved, ` : ""}${unchanged} unchanged, ${next.length} total)`;
+  return [...removed.map((l) => `- ${l}`), ...added.map((l) => `+ ${l}`), summary].join("\n");
+}
+function key(line) {
+  return line.replace(/ @-?\d+,-?\d+/, "");
+}
+function readOrDiff(previous, next) {
+  const full = next.join("\n");
+  if (!previous) return full;
+  const diff = diffRead(previous, next);
+  return diff.length < full.length ? diff : full;
+}
+
+// src/server/desktop-tools.ts
 function text(body) {
   return { content: [{ type: "text", text: body }] };
 }
@@ -1232,6 +1403,7 @@ var target = {
   y: z.number().optional(),
   app: z.string().optional()
 };
+var lastRead = /* @__PURE__ */ new WeakMap();
 function registerDesktopTools(server, desktop) {
   server.registerTool(
     "desktop_apps",
@@ -1256,15 +1428,19 @@ function registerDesktopTools(server, desktop) {
       inputSchema: {
         app: z.string().optional(),
         find: z.string().optional(),
-        max: z.number().int().min(1).max(500).optional()
+        max: z.number().int().min(1).max(500).optional(),
+        changes: z.boolean().optional().describe("only what changed since your last read (refs stay valid)")
       }
     },
-    async ({ app, find, max }) => {
+    async ({ app, find, max, changes }) => {
       if (find) {
         const matches = await desktop.find(find, { app });
         return text(matches.length ? matches.map(formatElement).join("\n") : `Nothing matching "${find}".`);
       }
-      return text(formatView(await desktop.read({ app, max })));
+      const lines = formatView(await desktop.read({ app, max })).split("\n");
+      const body = changes ? readOrDiff(lastRead.get(desktop), lines) : lines.join("\n");
+      lastRead.set(desktop, lines);
+      return text(body);
     }
   );
   server.registerTool(
@@ -1356,6 +1532,7 @@ import { z as z2 } from "zod";
 function text2(body) {
   return { content: [{ type: "text", text: body }] };
 }
+var lastRead2 = /* @__PURE__ */ new WeakMap();
 function registerTools(server, action) {
   server.registerTool(
     "read_page",
@@ -1363,12 +1540,16 @@ function registerTools(server, action) {
       description: "Read the current page: interactive elements with stable [ref] handles, their roles/names and on-screen rectangles, plus visible text. Call before clicking or typing by ref.",
       inputSchema: {
         maxElements: z2.number().int().min(1).max(200).optional(),
-        includeText: z2.boolean().optional()
+        includeText: z2.boolean().optional(),
+        changes: z2.boolean().optional().describe("only what changed since your last read (refs stay valid)")
       }
     },
-    async ({ maxElements, includeText }) => {
+    async ({ maxElements, includeText, changes }) => {
       const snap = await action.readPage(maxElements ?? 60, includeText ?? true);
-      return text2(formatSnapshot(snap));
+      const lines = formatSnapshot(snap);
+      const body = changes ? readOrDiff(lastRead2.get(action), lines) : lines.join("\n");
+      lastRead2.set(action, lines);
+      return text2(body);
     }
   );
   server.registerTool(
@@ -1463,9 +1644,9 @@ function registerTools(server, action) {
         stealth: z2.boolean().optional()
       }
     },
-    async ({ key, stealth }) => {
-      await action.pressKey(key, stealth);
-      return text2(`pressed ${key}`);
+    async ({ key: key2, stealth }) => {
+      await action.pressKey(key2, stealth);
+      return text2(`pressed ${key2}`);
     }
   );
   server.registerTool(
@@ -1647,8 +1828,8 @@ function formatSnapshot(snap) {
     `Elements (${snap.elements.length}):`
   ];
   for (const e of snap.elements) lines.push(formatElement2(e));
-  if (snap.text) lines.push("", "Text:", truncate(snap.text, 4e3));
-  return lines.join("\n");
+  if (snap.text) lines.push("", "Text:", ...truncate(snap.text, 4e3).split("\n"));
+  return lines;
 }
 function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n)}\u2026` : s;
@@ -1665,7 +1846,7 @@ function formatElement2(e) {
 
 // src/server/transport.ts
 import { randomUUID } from "crypto";
-import { once } from "events";
+import { once as once2 } from "events";
 import { WebSocket, WebSocketServer } from "ws";
 var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
 var ExtensionTransport = class {
@@ -1701,7 +1882,7 @@ var ExtensionTransport = class {
   }
   /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
   async listening() {
-    if (!this.wss.address()) await once(this.wss, "listening");
+    if (!this.wss.address()) await once2(this.wss, "listening");
     return this.wss.address().port;
   }
   get connected() {
@@ -1745,7 +1926,7 @@ var ExtensionTransport = class {
 };
 
 // src/server/create.ts
-var SELF = fileURLToPath2(import.meta.url);
+var SELF = fileURLToPath3(import.meta.url);
 var BUILD_ID = Math.round(statSync(SELF).mtimeMs);
 function readVersion() {
   try {
@@ -1792,7 +1973,7 @@ function instructions(ports2, browser, desktop) {
     `If a tool reports missing permissions or a disconnected extension, send the user to http://127.0.0.1:${ports2.http} to finish setup.`
   ].filter(Boolean).join("\n");
 }
-var logFile = (port) => join2(tmpdir2(), `agentcursor-${port}.log`);
+var logFile = (port) => join3(tmpdir3(), `agentcursor-${port}.log`);
 
 // src/server/proxy.ts
 var base = (port) => `http://127.0.0.1:${port}`;
@@ -1820,7 +2001,7 @@ async function ensureDaemon(port) {
     await until(async () => !await health(port), 5e3);
   }
   const log = openSync(logFile(port), "a");
-  spawn(process.execPath, [SELF, "serve", "--idle-exit"], {
+  spawn2(process.execPath, [SELF, "serve", "--idle-exit"], {
     detached: true,
     stdio: ["ignore", log, log],
     env: process.env
@@ -1871,7 +2052,71 @@ async function runStdioProxy(port) {
   setInterval(() => void health(port), 6e4).unref();
 }
 
+// src/cli/launch.ts
+function parseFlags(rest2) {
+  const flags = { headless: false };
+  for (let i = 0; i < rest2.length; i++) {
+    const raw = rest2[i];
+    if (!raw.startsWith("--")) continue;
+    const eq = raw.indexOf("=");
+    const name = raw.slice(2, eq === -1 ? void 0 : eq);
+    if (name === "headless") {
+      flags.headless = true;
+      continue;
+    }
+    if (!["user-data-dir", "profile", "chrome", "executable-path", "port"].includes(name)) {
+      throw new Error(`unknown flag --${name}`);
+    }
+    const value = eq === -1 ? rest2[++i] : raw.slice(eq + 1);
+    if (value === void 0) throw new Error(`--${name} needs a value`);
+    if (name === "user-data-dir" || name === "profile") flags.userDataDir = value;
+    else if (name === "chrome" || name === "executable-path") flags.executablePath = value;
+    else flags.port = Number(value);
+  }
+  return flags;
+}
+async function launchCli(ports2, rest2) {
+  let flags;
+  try {
+    flags = parseFlags(rest2);
+  } catch (err) {
+    process.stderr.write(`agentcursor launch: ${err.message}
+`);
+    process.exit(1);
+  }
+  const wsPort = flags.port ?? ports2.ws;
+  await ensureDaemon(ports2.http);
+  let browser;
+  try {
+    browser = await launchBrowser(wsPort, {
+      headless: flags.headless,
+      userDataDir: flags.userDataDir,
+      executablePath: flags.executablePath
+    });
+  } catch (err) {
+    process.stderr.write(`agentcursor launch: ${err.message}
+`);
+    process.exit(1);
+  }
+  const where = flags.userDataDir ? `profile ${flags.userDataDir}` : "a throwaway profile";
+  process.stderr.write(
+    `agentcursor: browser up on ${where}${flags.headless ? " (headless)" : ""}, wired to ws://127.0.0.1:${wsPort}. Drive it from your agent (agentcursor read_page / click / evaluate ...). Ctrl-C to stop.
+`
+  );
+  const stop = async () => {
+    await browser.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  await new Promise(() => {
+  });
+}
+
 // src/cli/run.ts
+import { writeFile } from "fs/promises";
+import { tmpdir as tmpdir4 } from "os";
+import { join as join4 } from "path";
 async function runTool(port, argv) {
   const name = argv[0]?.replace(/-/g, "_");
   await ensureDaemon(port);
@@ -1899,7 +2144,7 @@ async function runTool(port, argv) {
 }
 async function saveImage(data, mimeType = "image/png") {
   const ext = mimeType.includes("jpeg") ? "jpg" : "png";
-  const file = join3(process.env.AGENTCURSOR_OUT ?? tmpdir3(), `agentcursor-${Date.now()}.${ext}`);
+  const file = join4(process.env.AGENTCURSOR_OUT ?? tmpdir4(), `agentcursor-${Date.now()}.${ext}`);
   await writeFile(file, Buffer.from(data, "base64"));
   return file;
 }
@@ -1922,9 +2167,9 @@ function parseArgs(tool, rest2) {
       continue;
     }
     while (next < order.length && order[next] in args) next++;
-    const key = order[next++];
-    if (!key) throw new Error(`agentcursor: too many arguments for ${tool.name}`);
-    args[key] = coerce(item, props[key]?.type);
+    const key2 = order[next++];
+    if (!key2) throw new Error(`agentcursor: too many arguments for ${tool.name}`);
+    args[key2] = coerce(item, props[key2]?.type);
   }
   return args;
 }
@@ -1966,7 +2211,8 @@ function usage(tools, full) {
   }
   lines.push(
     "",
-    "Also: agentcursor setup | serve | mcp (stdio MCP server) | tools (same list with full descriptions)",
+    "Also: agentcursor launch [--user-data-dir DIR] [--chrome PATH] [--headless] (attach a real-profile browser in the background)",
+    "      agentcursor setup | serve | mcp (stdio MCP server) | tools (same list with full descriptions)",
     "Screenshots are written to a file and the path is printed. AGENTCURSOR_OUT sets the directory.",
     ""
   );
@@ -1975,25 +2221,25 @@ function usage(tools, full) {
 
 // src/server/http.ts
 import { createServer } from "http";
-import { fileURLToPath as fileURLToPath3 } from "url";
+import { fileURLToPath as fileURLToPath4 } from "url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 // src/setup/clients.ts
 import { spawnSync } from "child_process";
-import { copyFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "fs";
+import { copyFileSync, existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
 import { homedir } from "os";
-import { delimiter, dirname, join as join4 } from "path";
+import { delimiter, dirname, join as join5 } from "path";
 var SERVER_NAME = "agentcursor";
 function launchEntry(self) {
-  if (self.includes(join4("_npx", ""))) {
-    return { command: join4(dirname(process.execPath), "npx"), args: ["-y", "agentcursor"] };
+  if (self.includes(join5("_npx", ""))) {
+    return { command: join5(dirname(process.execPath), "npx"), args: ["-y", "agentcursor"] };
   }
   return { command: process.execPath, args: [self] };
 }
 var toolPath = () => [
   process.env.PATH,
   dirname(process.execPath),
-  join4(homedir(), ".local", "bin"),
+  join5(homedir(), ".local", "bin"),
   "/opt/homebrew/bin",
   "/usr/local/bin"
 ].filter(Boolean).join(delimiter);
@@ -2010,35 +2256,35 @@ function readJson(path) {
     return null;
   }
 }
-function writeJsonEntry(path, key, value) {
+function writeJsonEntry(path, key2, value) {
   let config = {};
-  if (existsSync2(path)) {
+  if (existsSync3(path)) {
     const raw = readFileSync2(path, "utf8");
     try {
       config = raw.trim() ? JSON.parse(raw) : {};
     } catch {
       throw new Error(
         `${path} is not plain JSON (it may contain comments). Add this by hand:
-${JSON.stringify({ [key]: { [SERVER_NAME]: value } }, null, 2)}`
+${JSON.stringify({ [key2]: { [SERVER_NAME]: value } }, null, 2)}`
       );
     }
     copyFileSync(path, `${path}.bak`);
   } else {
     mkdirSync(dirname(path), { recursive: true });
   }
-  config[key] = { ...config[key] ?? {}, [SERVER_NAME]: value };
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}
+  config[key2] = { ...config[key2] ?? {}, [SERVER_NAME]: value };
+  writeFileSync2(path, `${JSON.stringify(config, null, 2)}
 `);
   return `added to ${path} (backup at .bak); restart the app to load it`;
 }
-function jsonClient(id, name, dir, file, key, shape = (e) => e) {
-  const path = join4(dir, file);
+function jsonClient(id, name, dir, file, key2, shape = (e) => e) {
+  const path = join5(dir, file);
   return {
     id,
     name,
-    detect: () => existsSync2(dir),
-    configured: () => Boolean(readJson(path)?.[key]?.[SERVER_NAME]),
-    connect: (entry) => writeJsonEntry(path, key, shape(entry))
+    detect: () => existsSync3(dir),
+    configured: () => Boolean(readJson(path)?.[key2]?.[SERVER_NAME]),
+    connect: (entry) => writeJsonEntry(path, key2, shape(entry))
   };
 }
 function cliClient(id, name, bin, addArgs, configured) {
@@ -2056,9 +2302,9 @@ function cliClient(id, name, bin, addArgs, configured) {
   };
 }
 function appDataDir(home, ...parts) {
-  if (process.platform === "darwin") return join4(home, "Library", "Application Support", ...parts);
-  if (process.platform === "win32") return join4(process.env.APPDATA ?? join4(home, "AppData", "Roaming"), ...parts);
-  return join4(home, ".config", ...parts);
+  if (process.platform === "darwin") return join5(home, "Library", "Application Support", ...parts);
+  if (process.platform === "win32") return join5(process.env.APPDATA ?? join5(home, "AppData", "Roaming"), ...parts);
+  return join5(home, ".config", ...parts);
 }
 function clients(home = homedir()) {
   return [
@@ -2067,9 +2313,9 @@ function clients(home = homedir()) {
       "Claude Code",
       "claude",
       (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, "--", e.command, ...e.args],
-      () => Boolean(readJson(join4(home, ".claude.json"))?.mcpServers?.[SERVER_NAME])
+      () => Boolean(readJson(join5(home, ".claude.json"))?.mcpServers?.[SERVER_NAME])
     ),
-    jsonClient("cursor", "Cursor", join4(home, ".cursor"), "mcp.json", "mcpServers"),
+    jsonClient("cursor", "Cursor", join5(home, ".cursor"), "mcp.json", "mcpServers"),
     jsonClient("vscode", "VS Code", appDataDir(home, "Code", "User"), "mcp.json", "servers", (e) => ({ type: "stdio", ...e })),
     cliClient(
       "codex",
@@ -2078,20 +2324,20 @@ function clients(home = homedir()) {
       (e) => ["mcp", "add", SERVER_NAME, "--", e.command, ...e.args],
       () => {
         try {
-          return /^\[mcp_servers\.agentcursor\]/m.test(readFileSync2(join4(home, ".codex", "config.toml"), "utf8"));
+          return /^\[mcp_servers\.agentcursor\]/m.test(readFileSync2(join5(home, ".codex", "config.toml"), "utf8"));
         } catch {
           return false;
         }
       }
     ),
-    jsonClient("windsurf", "Windsurf", join4(home, ".codeium", "windsurf"), "mcp_config.json", "mcpServers"),
+    jsonClient("windsurf", "Windsurf", join5(home, ".codeium", "windsurf"), "mcp_config.json", "mcpServers"),
     jsonClient("claude-desktop", "Claude Desktop", appDataDir(home, "Claude"), "claude_desktop_config.json", "mcpServers"),
     cliClient(
       "gemini",
       "Gemini CLI",
       "gemini",
       (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, e.command, ...e.args],
-      () => Boolean(readJson(join4(home, ".gemini", "settings.json"))?.mcpServers?.[SERVER_NAME])
+      () => Boolean(readJson(join5(home, ".gemini", "settings.json"))?.mcpServers?.[SERVER_NAME])
     )
   ];
 }
@@ -2203,7 +2449,7 @@ async function status(rt) {
     extension: {
       connected: rt.extension.connected,
       wsPort: rt.ports.ws,
-      path: fileURLToPath3(new URL("../extension", import.meta.url))
+      path: fileURLToPath4(new URL("../extension", import.meta.url))
     },
     desktop: {
       supported,
@@ -2236,7 +2482,7 @@ function readBody(req) {
 }
 
 // src/setup/cli.ts
-import { spawn as spawn2 } from "child_process";
+import { spawn as spawn3 } from "child_process";
 async function setup(port, argv) {
   await ensureDaemon(port);
   const all = argv.includes("--all");
@@ -2263,7 +2509,7 @@ Setup page: ${url}`);
 }
 function openUrl(url) {
   const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-  spawn2(cmd, args, { stdio: "ignore", detached: true }).unref();
+  spawn3(cmd, args, { stdio: "ignore", detached: true }).unref();
 }
 
 // src/index.ts
@@ -2274,6 +2520,8 @@ if (command === "serve") {
 } else if (command === "setup") {
   await setup(ports.http, rest);
   process.exit(0);
+} else if (command === "launch") {
+  await launchCli(ports, rest);
 } else if (command === "mcp") {
   await runStdioProxy(ports.http);
 } else {

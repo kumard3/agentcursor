@@ -1078,6 +1078,7 @@ async function launchBrowser(port, options = {}) {
     "--password-store=basic",
     "--use-mock-keychain",
     ...options.headless ? ["--headless=new"] : [],
+    ...options.accessibility ? ["--force-renderer-accessibility"] : [],
     ...options.args ?? [],
     "about:blank"
   ];
@@ -1450,6 +1451,11 @@ var DesktopService = class {
   persona;
   view = null;
   currentPid;
+  // Refs stick to the same control across reads of the same app, so an agent's
+  // earlier ref stays valid and reads can be diffed. The value is left out of
+  // the key so typing into a field does not rename it.
+  refKeys = /* @__PURE__ */ new Map();
+  refCounter = 0;
   permissions() {
     return ax(["permissions"]);
   }
@@ -1484,13 +1490,17 @@ var DesktopService = class {
       "--max",
       String(opts.max ?? 150)
     ]);
+    if (snap.pid !== this.currentPid) {
+      this.refKeys.clear();
+      this.refCounter = 0;
+    }
     this.currentPid = snap.pid;
     this.view = {
       app: { name: snap.name, pid: snap.pid, bundleId: snap.bundleId },
       window: snap.window,
       truncated: snap.truncated,
-      elements: snap.elements.map((e, i) => ({
-        ref: `d${i + 1}`,
+      elements: snap.elements.map((e) => ({
+        ref: this.refFor(e),
         role: e.role,
         name: e.name,
         value: e.value,
@@ -1601,6 +1611,15 @@ var DesktopService = class {
       await sleep(150);
       from = to;
     }
+  }
+  refFor(e) {
+    const key = `${e.role}|${e.name}|${Math.round(e.x / 8)},${Math.round(e.y / 8)}`;
+    let ref = this.refKeys.get(key);
+    if (!ref) {
+      ref = `d${++this.refCounter}`;
+      this.refKeys.set(key, ref);
+    }
+    return ref;
   }
   element(ref) {
     const el = this.view?.elements.find((e) => e.ref === ref);

@@ -1,3 +1,4 @@
+import { launchCli } from "./cli/launch";
 import { runTool } from "./cli/run";
 import { createRuntime, resolvePorts } from "./server/create";
 import { serve } from "./server/http";
@@ -12,6 +13,8 @@ if (command === "serve") {
 } else if (command === "setup") {
   await setup(ports.http, rest);
   process.exit(0);
+} else if (command === "launch") {
+  await launchCli(ports, rest);
 } else if (command === "mcp") {
   await runStdioProxy(ports.http);
 } else {
