@@ -3,6 +3,48 @@ import ApplicationServices
 
 let args = Array(CommandLine.arguments.dropFirst())
 
+final class CursorView: NSView {
+    var color: NSColor = .white
+    var label: String = ""
+    override func draw(_ dirty: NSRect) {
+        let h = bounds.height
+        let arrow = NSBezierPath()
+        arrow.move(to: NSPoint(x: 2, y: h - 2))
+        arrow.line(to: NSPoint(x: 2, y: h - 19))
+        arrow.line(to: NSPoint(x: 6, y: h - 15))
+        arrow.line(to: NSPoint(x: 9, y: h - 21))
+        arrow.line(to: NSPoint(x: 12, y: h - 20))
+        arrow.line(to: NSPoint(x: 9, y: h - 14))
+        arrow.line(to: NSPoint(x: 15, y: h - 14))
+        arrow.close()
+        color.setFill()
+        arrow.fill()
+        NSColor.black.withAlphaComponent(0.85).setStroke()
+        arrow.lineWidth = 1.2
+        arrow.stroke()
+        guard !label.isEmpty else { return }
+        let text = label as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.black,
+        ]
+        let size = text.size(withAttributes: attrs)
+        let box = NSRect(x: 16, y: h - 22 - size.height, width: size.width + 10, height: size.height + 4)
+        color.setFill()
+        NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4).fill()
+        text.draw(at: NSPoint(x: box.minX + 5, y: box.minY + 2), withAttributes: attrs)
+    }
+}
+
+extension NSColor {
+    convenience init(hex: String) {
+        var v: UInt64 = 0
+        Scanner(string: hex.replacingOccurrences(of: "#", with: "")).scanHexInt64(&v)
+        self.init(srgbRed: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+                  blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+    }
+}
+
 func emit(_ obj: Any) -> Never {
     let data = (try? JSONSerialization.data(withJSONObject: obj, options: [])) ?? Data("{}".utf8)
     FileHandle.standardOutput.write(data)
@@ -206,6 +248,124 @@ case "snapshot":
         "window": info, "elements": walker.out, "truncated": walker.truncated, "visited": walker.visited,
     ]) { a, _ in a })
 
+case "post":
+    // Background input: events go straight to one process, so the user's own
+    // pointer and focus are never touched and tests can run side by side.
+    requireTrust()
+    guard let app = targetApp() else { fail("app not found") }
+    let pid = app.processIdentifier
+    let raw = FileHandle.standardInput.readDataToEndOfFile()
+    guard let plan = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] else { fail("post needs a JSON plan on stdin") }
+
+    func at(_ d: [String: Any]) -> CGPoint {
+        CGPoint(x: (d["x"] as? Double) ?? 0, y: (d["y"] as? Double) ?? 0)
+    }
+    func send(_ e: CGEvent?) {
+        e?.postToPid(pid)
+    }
+    let buttonName = (plan["button"] as? String) ?? "left"
+    let button: CGMouseButton = buttonName == "right" ? .right : (buttonName == "center" || buttonName == "middle" ? .center : .left)
+    let downType: CGEventType = button == .right ? .rightMouseDown : (button == .center ? .otherMouseDown : .leftMouseDown)
+    let upType: CGEventType = button == .right ? .rightMouseUp : (button == .center ? .otherMouseUp : .leftMouseUp)
+
+    var last = CGPoint.zero
+    if let moves = plan["moves"] as? [[String: Any]], !moves.isEmpty {
+        let start = Date()
+        for m in moves {
+            let p = at(m)
+            last = p
+            let due = ((m["t"] as? Double) ?? 0) / 1000
+            let wait = due - Date().timeIntervalSince(start)
+            if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+            send(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
+        }
+    }
+    if let click = plan["click"] as? [String: Any] {
+        let p = click["x"] != nil ? at(click) : last
+        Thread.sleep(forTimeInterval: ((click["dwellMs"] as? Double) ?? 0) / 1000)
+        let times = ((click["double"] as? Bool) ?? false) ? 2 : 1
+        for i in 1...times {
+            let down = CGEvent(mouseEventSource: nil, mouseType: downType, mouseCursorPosition: p, mouseButton: button)
+            down?.setIntegerValueField(.mouseEventClickState, value: Int64(i))
+            send(down)
+            Thread.sleep(forTimeInterval: ((click["pressMs"] as? Double) ?? 60) / 1000)
+            let up = CGEvent(mouseEventSource: nil, mouseType: upType, mouseCursorPosition: p, mouseButton: button)
+            up?.setIntegerValueField(.mouseEventClickState, value: Int64(i))
+            send(up)
+        }
+    }
+    if let scroll = plan["scroll"] as? [String: Any] {
+        let dy = Int32((scroll["dy"] as? Double) ?? 0)
+        let dx = Int32((scroll["dx"] as? Double) ?? 0)
+        let steps = max(1, Int((scroll["steps"] as? Double) ?? 1))
+        for _ in 0..<steps {
+            send(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                         wheel1: dy / Int32(steps), wheel2: dx / Int32(steps), wheel3: 0))
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+    }
+    if let keys = plan["keys"] as? [[String: Any]] {
+        for k in keys {
+            Thread.sleep(forTimeInterval: ((k["delayMs"] as? Double) ?? 0) / 1000)
+            if let code = k["code"] as? Int {
+                let flags = CGEventFlags(rawValue: UInt64((k["flags"] as? Int) ?? 0))
+                let down = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: true)
+                down?.flags = flags
+                send(down)
+                let up = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: false)
+                up?.flags = flags
+                send(up)
+            } else if let ch = k["ch"] as? String {
+                var utf16 = Array(ch.utf16)
+                let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+                down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                send(down)
+                let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+                up?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                send(up)
+            }
+        }
+    }
+    emit(["ok": true, "pid": Int(pid), "x": Int(last.x), "y": Int(last.y)])
+
+case "overlay":
+    // A cursor of its own, drawn on top of everything and click-through, so a
+    // background test is watchable without touching the user's real pointer.
+    // Reads "x y" lines on stdin; any other line quits.
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let color = NSColor(hex: opt("--color") ?? "#FFFFFF")
+    let label = opt("--label") ?? ""
+    let size = NSSize(width: label.isEmpty ? 24 : 150, height: 40)
+    let win = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless],
+                       backing: .buffered, defer: false)
+    win.isOpaque = false
+    win.backgroundColor = .clear
+    win.level = .screenSaver
+    win.ignoresMouseEvents = true
+    win.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+    win.hasShadow = false
+    let view = CursorView(frame: NSRect(origin: .zero, size: size))
+    view.color = color
+    view.label = label
+    win.contentView = view
+    win.orderFrontRegardless()
+
+    let height = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
+    DispatchQueue.global().async {
+        while let line = readLine(strippingNewline: true) {
+            let parts = line.split(separator: " ").compactMap { Double($0) }
+            guard parts.count == 2 else { break }
+            DispatchQueue.main.async {
+                // Posted events use top-left screen coords; AppKit windows use bottom-left.
+                win.setFrameOrigin(NSPoint(x: parts[0] - 3, y: height - parts[1] - size.height + 6))
+            }
+        }
+        DispatchQueue.main.async { app.terminate(nil) }
+    }
+    app.run()
+    exit(0)
+
 default:
-    fail("usage: agentcursor-ax permissions|request-accessibility|request-screen|apps|activate|window|snapshot [--pid N|--app NAME] [--max N]")
+    fail("usage: agentcursor-ax permissions|request-accessibility|request-screen|apps|activate|window|snapshot|post [--pid N|--app NAME] [--max N]")
 }

@@ -54,7 +54,10 @@ export function createRuntime(ports: Ports): Runtime {
       : new ExtensionDriver(extension);
   return {
     action: new ActionService(driver, persona),
-    desktop: new DesktopService(persona),
+    desktop: new DesktopService(persona, {
+      background: process.env.AGENTCURSOR_BACKGROUND === "1",
+      showCursor: process.env.AGENTCURSOR_SHOW_CURSOR === "1",
+    }),
     extension,
     persona,
     ports,

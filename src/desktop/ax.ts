@@ -45,12 +45,12 @@ export const helperPath = fileURLToPath(new URL("./native/agentcursor-ax", impor
 
 export const desktopSupported = (): boolean => process.platform === "darwin" && existsSync(helperPath);
 
-export function ax<T>(args: string[], timeoutMs = 20_000): Promise<T> {
+export function ax<T>(args: string[], timeoutMs = 20_000, stdin?: string): Promise<T> {
   if (process.platform !== "darwin") {
     return Promise.reject(new Error("Desktop control currently supports macOS only."));
   }
   return new Promise((resolve, reject) => {
-    execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+    const child = execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
       if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") {
         return reject(new Error(`Desktop helper missing at ${helperPath}. Run \`pnpm build\`.`));
       }
@@ -63,6 +63,7 @@ export function ax<T>(args: string[], timeoutMs = 20_000): Promise<T> {
       if (parsed?.error) return reject(new Error(parsed.error));
       resolve(parsed as T);
     });
+    if (stdin !== undefined) child.stdin?.end(stdin);
   });
 }
 

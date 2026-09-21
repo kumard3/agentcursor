@@ -247,6 +247,20 @@ if (await d.waitForText("Saved")) console.log("done");
 
 `find()` returns only matching elements (tens of tokens), `view()` gives the structured elements, and `screenshot({ path })` is the fallback when the text is not enough. macOS only, and it needs Accessibility permission for whichever app starts it.
 
+**Background runs, and a cursor per session.** By default computer use moves the one real pointer, which takes your machine over. `background: true` posts input straight to the target process instead: your pointer never moves, the app is never raised, and every `Desktop` keeps a cursor of its own, so runs happen while you work and several can run at once.
+
+```ts
+const alice = await Desktop.open("Notes", { background: true, showCursor: { color: "#4ade80", label: "alice" } });
+const bob = await Desktop.open("Reminders", { background: true, showCursor: { color: "#60a5fa", label: "bob" } });
+await Promise.all([alice.type("from alice"), bob.type("from bob")]);
+```
+
+`showCursor` is off unless you ask for it: it draws a click-through cursor above every window, coloured and named, so a background run is watchable. For MCP and the CLI, set `AGENTCURSOR_BACKGROUND=1` and `AGENTCURSOR_SHOW_CURSOR=1`.
+
+Measured on a background TextEdit while the terminal stayed frontmost: the text landed, the frontmost app did not change, and the pointer sat at 471,628 before and after.
+
+**The limit worth knowing:** this works for native (AppKit) apps. Chromium and Electron apps ignore process-posted events, measured on Chrome, which ignored them even while frontmost, so it covers Notes, Mail, Finder, TextEdit and friends but not Chrome, Arc, VS Code, Slack or Discord. For browsers use `AgentCursor.launch({ headless: true })`, which is fully background anyway and draws its cursor in the page.
+
 **Driving a browser with computer use instead of the DOM.** A page can also be read and clicked as an app, with no extension and no DOM: the clicks are real OS clicks, so the page sees `isTrusted=true`. Chrome only builds its accessibility tree for a screen reader, so ask for it at launch:
 
 ```ts

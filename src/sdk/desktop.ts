@@ -6,6 +6,13 @@ import type { MouseButton } from "../protocol";
 export interface DesktopOptions {
   /** Persona seed. Same seed reproduces the same motion and typing. */
   seed?: number;
+  /**
+   * Post input straight to the target app: your own pointer never moves, the app is never
+   * raised, and every Desktop gets a cursor of its own, so runs can happen while you work.
+   */
+  background?: boolean;
+  /** Draw this session's cursor on screen, optionally with a colour and name. */
+  showCursor?: boolean | { color?: string; label?: string };
 }
 
 /** A [dN] ref, or the visible text/label of a control. */
@@ -23,7 +30,12 @@ export class Desktop {
   private constructor(private readonly service: DesktopService) {}
 
   static async open(app?: string, options: DesktopOptions = {}): Promise<Desktop> {
-    const d = new Desktop(new DesktopService(createPersona(options.seed)));
+    const d = new Desktop(
+      new DesktopService(createPersona(options.seed), {
+        background: options.background,
+        showCursor: options.showCursor,
+      }),
+    );
     if (app) await d.service.open(app);
     return d;
   }
@@ -84,6 +96,11 @@ export class Desktop {
     const shot = await this.service.screenshot(opts);
     if (opts.path) await writeFile(opts.path, Buffer.from(shot.data, "base64"));
     return opts.path ?? `data:${shot.mimeType};base64,${shot.data}`;
+  }
+
+  /** Stops drawing this session's cursor. */
+  close(): void {
+    this.service.close();
   }
 
   /** Waits for text to appear in the window. Returns false on timeout. */

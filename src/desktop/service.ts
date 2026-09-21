@@ -11,6 +11,8 @@ import type { Persona } from "../persona";
 import type { MouseButton, Point, Rect } from "../protocol";
 import { sleep } from "../util/timing";
 import { appArgs, ax, type AxApp, type AxPermissions, type AxSnapshot, type AxWindow } from "./ax";
+import { CursorOverlay, type OverlayOptions } from "./overlay";
+import { combo as keyCombo, keyOps, post } from "./post";
 
 const run = promisify(execFile);
 
@@ -45,16 +47,56 @@ export interface Screenshot {
   note: string;
 }
 
+export interface DesktopServiceOptions {
+  /** Post input straight to the target process: the user's pointer and focus are left alone,
+   * each service keeps its own cursor, and several can run at once. */
+  background?: boolean;
+  /** Draw this session's cursor on screen (background mode). Off unless asked for. */
+  showCursor?: boolean | OverlayOptions;
+}
+
 export class DesktopService {
   private view: DesktopView | null = null;
   private currentPid: number | undefined;
+  /** This service's own cursor, used in background mode instead of the system pointer. */
+  private pos: Point = { x: 0, y: 0 };
+  private overlay: CursorOverlay | null = null;
   // Refs stick to the same control across reads of the same app, so an agent's
   // earlier ref stays valid and reads can be diffed. The value is left out of
   // the key so typing into a field does not rename it.
   private refKeys = new Map<string, string>();
   private refCounter = 0;
 
-  constructor(private readonly persona: Persona) {}
+  constructor(
+    private readonly persona: Persona,
+    private readonly opts: DesktopServiceOptions = {},
+  ) {}
+
+  get background(): boolean {
+    return this.opts.background ?? false;
+  }
+
+  private get pointer(): CursorOverlay | null {
+    const want = this.opts.showCursor;
+    if (!want || !this.background) return null;
+    this.overlay ??= new CursorOverlay(typeof want === "object" ? want : {});
+    return this.overlay;
+  }
+
+  /** Stops drawing this session's cursor. */
+  close(): void {
+    this.overlay?.close();
+    this.overlay = null;
+  }
+
+  /** Where this service's cursor is (background mode); the system pointer otherwise. */
+  cursor(): Promise<Point> {
+    if (this.background) return Promise.resolve(this.pos);
+    return loadNut().then(async (nut) => {
+      const p = await nut.mouse.getPosition();
+      return { x: p.x, y: p.y };
+    });
+  }
 
   permissions(): Promise<AxPermissions> {
     return ax<AxPermissions>(["permissions"]);
@@ -69,6 +111,7 @@ export class DesktopService {
   }
 
   async open(app: string): Promise<AxApp> {
+    if (this.background) return this.openInBackground(app);
     const before = (await this.apps()).find((a) => a.active)?.pid;
     await run("open", ["-a", app]).catch((e: { stderr?: string }) => {
       throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
@@ -85,6 +128,29 @@ export class DesktopService {
       await sleep(250);
     }
     throw new Error(`Opened "${app}" but it did not come to the front.`);
+  }
+
+  /** Launch or attach without bringing the app to the front (`open -g`). */
+  private async openInBackground(app: string): Promise<AxApp> {
+    const running = (a: AxApp) => {
+      const name = a.name.toLowerCase();
+      const want = app.toLowerCase();
+      return name === want || name.includes(want) || want.includes(name);
+    };
+    let found = (await this.apps()).find(running);
+    if (!found) {
+      await run("open", ["-g", "-a", app]).catch((e: { stderr?: string }) => {
+        throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
+      });
+      for (let i = 0; i < 40 && !found; i++) {
+        await sleep(250);
+        found = (await this.apps()).find(running);
+      }
+    }
+    if (!found) throw new Error(`Opened "${app}" but it did not start.`);
+    this.currentPid = found.pid;
+    this.view = null;
+    return found;
   }
 
   async read(opts: { app?: string; max?: number } = {}): Promise<DesktopView> {
@@ -126,8 +192,16 @@ export class DesktopService {
     await this.front(target.pid);
     await this.moveHuman(target.point, target.width);
     const traits = this.persona.traits();
-    await sleep(sampleDwellMs(this.persona.rng, traits.dwellScale));
-    await pressButton(await loadNut(), t.button ?? "left", samplePressMs(this.persona.rng, traits.pressScale), t.double);
+    const dwellMs = sampleDwellMs(this.persona.rng, traits.dwellScale);
+    const pressMs = samplePressMs(this.persona.rng, traits.pressScale);
+    if (this.background) {
+      await post(target.pid ?? this.currentPid, {
+        click: { x: target.point.x, y: target.point.y, button: t.button, double: t.double, dwellMs, pressMs },
+      });
+    } else {
+      await sleep(dwellMs);
+      await pressButton(await loadNut(), t.button ?? "left", pressMs, t.double);
+    }
     return describe(target);
   }
 
@@ -141,18 +215,24 @@ export class DesktopService {
   async type(opts: DesktopTarget & { value: string; clear?: boolean; submit?: boolean }): Promise<void> {
     if (opts.ref || opts.text || typeof opts.x === "number") await this.click(opts);
     else await this.front(this.currentPid);
+    this.persona.tick();
+    const schedule = this.persona.keySchedule(opts.value);
+    if (this.background) {
+      const keys = [
+        ...(opts.clear ? [{ ...keyCombo("cmd+a"), delayMs: 60 }, { ...keyCombo("backspace"), delayMs: 40 }] : []),
+        ...(keyOps(schedule) ?? []),
+        ...(opts.submit ? [{ ...keyCombo("enter"), delayMs: samplePressMs(this.persona.rng) }] : []),
+      ];
+      await post(this.currentPid, { keys });
+      return;
+    }
     const nut = await loadNut();
     if (opts.clear) {
       await pressCombo(nut, process.platform === "darwin" ? "cmd+a" : "ctrl+a", 60);
       await pressCombo(nut, "backspace", 40);
     }
-    this.persona.tick();
     const base = 12000 / this.persona.traits().wpm;
-    await typeText(nut, opts.value, {
-      schedule: this.persona.keySchedule(opts.value),
-      perKeyMinMs: base * 0.6,
-      perKeyMaxMs: base * 1.8,
-    });
+    await typeText(nut, opts.value, { schedule, perKeyMinMs: base * 0.6, perKeyMaxMs: base * 1.8 });
     if (opts.submit) await pressCombo(nut, "enter", samplePressMs(this.persona.rng));
   }
 
@@ -160,7 +240,12 @@ export class DesktopService {
     await this.front(this.currentPid);
     this.persona.tick();
     await sleep(this.persona.thinkTimeMs(0));
-    await pressCombo(await loadNut(), combo, samplePressMs(this.persona.rng, this.persona.traits().pressScale));
+    const pressMs = samplePressMs(this.persona.rng, this.persona.traits().pressScale);
+    if (this.background) {
+      await post(this.currentPid, { keys: [{ ...keyCombo(combo), delayMs: 0 }] });
+      return;
+    }
+    await pressCombo(await loadNut(), combo, pressMs);
   }
 
   async scroll(opts: DesktopTarget & { dy: number; dx?: number }): Promise<void> {
@@ -173,7 +258,8 @@ export class DesktopService {
     }
     this.persona.tick();
     const steps = Math.max(3, Math.round(Math.abs(opts.dy || opts.dx || 0) / this.persona.rng.range(80, 140)));
-    await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
+    if (this.background) await post(this.currentPid, { scroll: { dx: opts.dx ?? 0, dy: opts.dy, steps } });
+    else await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
     this.view = null;
   }
 
@@ -266,16 +352,23 @@ export class DesktopService {
   }
 
   private async moveHuman(to: Point, width: number): Promise<void> {
-    const nut = await loadNut();
-    const pos = await nut.mouse.getPosition();
-    const from = { x: pos.x, y: pos.y };
+    const from = await this.cursor();
     this.persona.tick();
     await sleep(this.persona.thinkTimeMs(distance(from, to)));
-    await playPath(nut, generateMove(from, to, this.persona.moveOptions(width)));
+    const samples = generateMove(from, to, this.persona.moveOptions(width));
+    if (this.background) {
+      const drawn = this.pointer?.play(samples);
+      await post(this.currentPid, { moves: samples });
+      await drawn;
+      this.pos = to;
+      return;
+    }
+    await playPath(await loadNut(), samples);
   }
 
   private async front(pid?: number): Promise<void> {
-    if (pid) await ax(["activate", "--pid", String(pid)]).catch(() => undefined);
+    // Background mode never raises the app: that is the whole point.
+    if (pid && !this.background) await ax(["activate", "--pid", String(pid)]).catch(() => undefined);
   }
 }
 
