@@ -10,7 +10,7 @@ const RANGES: Record<keyof Omit<PersonaTraits, "handedness">, [number, number]> 
   precision: [0.1, 0.26],
   dwellScale: [0.7, 1.5],
   pressScale: [0.75, 1.4],
-  wpm: [180, 420],
+  wpm: [62, 155],
   errorRate: [0, 0.05],
   reactionMs: [180, 520],
   thinkScale: [0.7, 1.5],

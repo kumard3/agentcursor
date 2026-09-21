@@ -111,4 +111,8 @@ export class ExtensionDriver implements BrowserDriver {
       opts.timeoutMs + 5_000,
     )) as LocatorMatch;
   }
+
+  async evaluate(expression: string): Promise<unknown> {
+    return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
+  }
 }

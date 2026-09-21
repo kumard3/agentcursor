@@ -172,6 +172,9 @@ type Command = {
     spec: LocatorSpec;
     timeoutMs: number;
     scrollIntoView?: boolean;
+} | {
+    kind: "evaluate";
+    expression: string;
 };
 
 interface ClickArgs {
@@ -239,6 +242,7 @@ interface BrowserDriver {
         timeoutMs: number;
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
+    evaluate(expression: string): Promise<unknown>;
 }
 
 interface Rng {
@@ -402,6 +406,7 @@ declare class ActionService {
     }): Promise<void>;
     navigate(url: string): Promise<void>;
     getUrl(): Promise<string>;
+    evaluate(fn: string, args?: unknown[]): Promise<unknown>;
     waitFor(opts: {
         ref?: string;
         text?: string;
@@ -439,6 +444,23 @@ declare class ActionService {
     /** A small settle move while waiting, the way a hand never sits perfectly still. */
     private idleDrift;
     private findElement;
+}
+
+interface LaunchOptions {
+    /** Chrome or Chromium binary. Defaults to AGENTCURSOR_CHROME, then the usual install paths.
+     * Point this at Chrome for Testing, Brave, Edge, or BrowserOS to drive that browser. */
+    executablePath?: string;
+    /** Run without a window (CI, or a real profile in the background). The cursor is still drawn. */
+    headless?: boolean;
+    /** Drive an existing profile directory instead of a throwaway copy: real cookies/logins,
+     * left intact on close. The browser must NOT already be running on this dir (profile lock). */
+    userDataDir?: string;
+    /** Extra Chrome flags, e.g. ["--window-size=900,800", "--window-position=0,0"]. */
+    args?: string[];
+    /** Expose the page to the macOS accessibility tree, so computer use (Desktop) can read and
+     * click it. Chrome otherwise builds that tree only for a screen reader, and a desktop read
+     * sees the toolbar but no page content. */
+    accessibility?: boolean;
 }
 
 interface LocatorContext {
@@ -499,13 +521,16 @@ declare class Locator {
     }): Promise<Locator>;
     scrollIntoView(): Promise<Locator>;
     boundingBox(): Promise<Rect | null>;
-    textContent(): Promise<string | null>;
+    textContent(opts?: {
+        timeout?: number;
+    }): Promise<string | null>;
     isVisible(): Promise<boolean>;
     count(): Promise<number>;
     waitFor(opts?: {
         state?: "visible" | "attached";
         timeout?: number;
     }): Promise<Locator>;
+    toString(): string;
     private step;
     private resolve;
     private require;
@@ -523,14 +548,18 @@ interface ConnectOptions {
 }
 /**
  * Programmatic entry point. Playwright-shaped locator API where every action is
- * driven by the human-cursor engine. Lifecycles: connect() attaches to a running
- * Chrome with the extension loaded; os() drives the real OS cursor via nut-js.
+ * driven by the human-cursor engine. Lifecycles: launch() starts a private
+ * Chrome with its own cursor (e2e tests; run several side by side); connect()
+ * attaches to a running Chrome with the extension loaded; os() drives the real
+ * OS cursor via nut-js.
  */
 declare class AgentCursor {
     private readonly action;
     private readonly transport;
     private readonly opts;
+    private readonly dispose?;
     private constructor();
+    static launch(options?: Omit<ConnectOptions, "port"> & LaunchOptions): Promise<AgentCursor>;
     static connect(options?: ConnectOptions): Promise<AgentCursor>;
     static os(options?: ConnectOptions): Promise<AgentCursor>;
     private static start;
@@ -545,6 +574,7 @@ declare class AgentCursor {
     navigate(url: string): Promise<AgentCursor>;
     goto(url: string): Promise<AgentCursor>;
     url(): Promise<string>;
+    evaluate<T = unknown>(fn: string | ((...a: any[]) => any), ...args: unknown[]): Promise<T>;
     scroll(opts: {
         dy: number;
         dx?: number;
@@ -561,6 +591,244 @@ declare class AgentCursor {
     private ctx;
     private root;
 }
+
+interface AxApp {
+    name: string;
+    pid: number;
+    bundleId: string;
+    active?: boolean;
+}
+interface AxWindow {
+    title: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+}
+interface AxPermissions {
+    accessibility: boolean;
+    screenRecording: boolean;
+}
+
+interface OverlayOptions {
+    /** Hex colour of this session's cursor, e.g. "#4ade80". */
+    color?: string;
+    /** Name shown next to it, so two tests are told apart on screen. */
+    label?: string;
+}
+/**
+ * A cursor of this session's own, drawn above every window and click-through.
+ * Background input does not move the system pointer, so this is what makes a
+ * background run watchable: one per session, each with its own colour.
+ */
+declare class CursorOverlay {
+    private readonly opts;
+    private proc;
+    constructor(opts?: OverlayOptions);
+    private child;
+    at(p: Point): void;
+    /** Follows a move with the same timing the posted events use. */
+    play(samples: CursorSample[]): Promise<void>;
+    close(): void;
+}
+
+interface DesktopElement {
+    ref: string;
+    role: string;
+    name: string;
+    value?: string;
+    rect: Rect;
+    enabled?: boolean;
+    focused?: boolean;
+}
+interface DesktopView {
+    app: AxApp;
+    window: AxWindow;
+    elements: DesktopElement[];
+    truncated: boolean;
+}
+interface DesktopTarget {
+    ref?: string;
+    text?: string;
+    x?: number;
+    y?: number;
+    app?: string;
+}
+interface Screenshot {
+    data: string;
+    mimeType: string;
+    note: string;
+}
+interface DesktopServiceOptions {
+    /** Post input straight to the target process: the user's pointer and focus are left alone,
+     * each service keeps its own cursor, and several can run at once. */
+    background?: boolean;
+    /** Draw this session's cursor on screen (background mode). Off unless asked for. */
+    showCursor?: boolean | OverlayOptions;
+}
+declare class DesktopService {
+    private readonly persona;
+    private readonly opts;
+    private view;
+    private currentPid;
+    /** This service's own cursor, used in background mode instead of the system pointer. */
+    private pos;
+    private overlay;
+    private refKeys;
+    private refCounter;
+    constructor(persona: Persona, opts?: DesktopServiceOptions);
+    get background(): boolean;
+    private get pointer();
+    /** Stops drawing this session's cursor. */
+    close(): void;
+    /** Where this service's cursor is (background mode); the system pointer otherwise. */
+    cursor(): Promise<Point>;
+    permissions(): Promise<AxPermissions>;
+    requestPermission(kind: "accessibility" | "screen"): Promise<Partial<AxPermissions>>;
+    apps(): Promise<AxApp[]>;
+    open(app: string): Promise<AxApp>;
+    /** Launch or attach without bringing the app to the front (`open -g`). */
+    private openInBackground;
+    read(opts?: {
+        app?: string;
+        max?: number;
+    }): Promise<DesktopView>;
+    find(text: string, opts?: {
+        app?: string;
+        maxResults?: number;
+    }): Promise<DesktopElement[]>;
+    click(t: DesktopTarget & {
+        button?: MouseButton;
+        double?: boolean;
+    }): Promise<string>;
+    move(t: DesktopTarget): Promise<string>;
+    type(opts: DesktopTarget & {
+        value: string;
+        clear?: boolean;
+        submit?: boolean;
+    }): Promise<void>;
+    key(combo: string): Promise<void>;
+    scroll(opts: DesktopTarget & {
+        dy: number;
+        dx?: number;
+    }): Promise<void>;
+    screenshot(opts?: {
+        app?: string;
+        ref?: string;
+        maxWidth?: number;
+    }): Promise<Screenshot>;
+    wiggle(): Promise<void>;
+    private refFor;
+    private element;
+    private resolve;
+    private moveHuman;
+    private front;
+}
+
+interface DesktopOptions {
+    /** Persona seed. Same seed reproduces the same motion and typing. */
+    seed?: number;
+    /**
+     * Post input straight to the target app: your own pointer never moves, the app is never
+     * raised, and every Desktop gets a cursor of its own, so runs can happen while you work.
+     */
+    background?: boolean;
+    /** Draw this session's cursor on screen, optionally with a colour and name. */
+    showCursor?: boolean | {
+        color?: string;
+        label?: string;
+    };
+}
+/** A [dN] ref, or the visible text/label of a control. */
+type DesktopQuery = string | {
+    ref?: string;
+    text?: string;
+    x?: number;
+    y?: number;
+    app?: string;
+};
+/**
+ * Computer use: drive any Mac app with the real cursor, reading the window as
+ * text from the accessibility tree instead of screenshots. Same engine, persona
+ * and reads as the desktop_* MCP tools.
+ */
+declare class Desktop {
+    private readonly service;
+    private constructor();
+    static open(app?: string, options?: DesktopOptions): Promise<Desktop>;
+    /** Escape hatch to the lower-level service (same object the MCP tools use). */
+    get actions(): DesktopService;
+    apps(): Promise<AxApp[]>;
+    permissions(): Promise<AxPermissions>;
+    activate(app: string): Promise<AxApp>;
+    /** The window as compact text with [dN] refs: far fewer tokens than a screenshot. */
+    read(opts?: {
+        app?: string;
+        max?: number;
+    }): Promise<string>;
+    /** Structured form of read(), when you want to assert on elements yourself. */
+    view(opts?: {
+        app?: string;
+        max?: number;
+    }): Promise<DesktopView>;
+    /** Only the elements matching a label: a handful of tokens instead of a whole window. */
+    find(text: string, opts?: {
+        app?: string;
+        maxResults?: number;
+    }): Promise<string>;
+    elements(text: string, opts?: {
+        app?: string;
+        maxResults?: number;
+    }): Promise<DesktopElement[]>;
+    click(q: DesktopQuery, opts?: {
+        button?: MouseButton;
+        double?: boolean;
+    }): Promise<string>;
+    dblclick(q: DesktopQuery): Promise<string>;
+    move(q: DesktopQuery): Promise<string>;
+    type(value: string, opts?: {
+        into?: DesktopQuery;
+        clear?: boolean;
+        submit?: boolean;
+    }): Promise<void>;
+    key(combo: string): Promise<void>;
+    scroll(opts: {
+        dy: number;
+        dx?: number;
+        over?: DesktopQuery;
+    }): Promise<void>;
+    /** Window screenshot, downscaled. Use when the text read is not enough. */
+    screenshot(opts?: {
+        app?: string;
+        ref?: string;
+        maxWidth?: number;
+        path?: string;
+    }): Promise<string>;
+    /** Stops drawing this session's cursor. */
+    close(): void;
+    /** Waits for text to appear in the window. Returns false on timeout. */
+    waitForText(text: string, opts?: {
+        app?: string;
+        timeout?: number;
+    }): Promise<boolean>;
+}
+
+interface Expectation {
+    readonly not: Expectation;
+    toBeVisible(): Promise<void>;
+    toBeHidden(): Promise<void>;
+    toHaveText(expected: string | RegExp): Promise<void>;
+    toContainText(expected: string): Promise<void>;
+    toHaveCount(expected: number): Promise<void>;
+    toHaveURL(expected: string | RegExp): Promise<void>;
+}
+/**
+ * Playwright-style web-first assertions: each matcher re-checks the live page
+ * until it passes or `timeout` (default 5s) runs out, so tests don't need sleeps.
+ */
+declare function expect(target: Locator | AgentCursor, opts?: {
+    timeout?: number;
+}): Expectation;
 
 /** Traits the typing scheduler reads (subset of PersonaTraits). */
 interface TypingTraits {
@@ -593,6 +861,8 @@ declare class ExtensionTransport {
     private socket;
     private readonly pending;
     constructor(port?: number);
+    /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
+    listening(): Promise<number>;
     get connected(): boolean;
     send(command: Command, timeoutMs?: number): Promise<unknown>;
     private onMessage;
@@ -630,6 +900,7 @@ declare class ExtensionDriver implements BrowserDriver {
         timeoutMs: number;
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
+    evaluate(expression: string): Promise<unknown>;
 }
 
 /**
@@ -664,6 +935,7 @@ declare class OsCursorDriver implements BrowserDriver {
         timeoutMs: number;
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
+    evaluate(expression: string): Promise<unknown>;
     cursorState(): Promise<Point>;
     move(samples: CursorSample[], _mode: DeliveryMode): Promise<void>;
     click(args: ClickArgs): Promise<void>;
@@ -672,4 +944,4 @@ declare class OsCursorDriver implements BrowserDriver {
     private geometry;
 }
 
-export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, type CursorSample, type DeliveryMode, ExtensionDriver, ExtensionTransport, type KeyOp, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type PageElement, type PageSnapshot, Persona, type PersonaInfo, type PersonaOptions, type PersonaTraits, type Point, type Rect, buildTypingSchedule, createPersona, createRng, flattenSchedule, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs, scheduleToKeystrokes };
+export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, CursorOverlay, type CursorSample, type DeliveryMode, Desktop, type DesktopOptions, type DesktopQuery, DesktopService, type DesktopServiceOptions, type Expectation, ExtensionDriver, ExtensionTransport, type KeyOp, type LaunchOptions, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type OverlayOptions, type PageElement, type PageSnapshot, Persona, type PersonaInfo, type PersonaOptions, type PersonaTraits, type Point, type Rect, buildTypingSchedule, createPersona, createRng, expect, flattenSchedule, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs, scheduleToKeystrokes };

@@ -1,5 +1,14 @@
 export { AgentCursor } from "./sdk/agent-cursor";
 export type { ConnectOptions } from "./sdk/agent-cursor";
+export type { LaunchOptions } from "./sdk/launch";
+export { Desktop } from "./sdk/desktop";
+export type { DesktopOptions, DesktopQuery } from "./sdk/desktop";
+export { DesktopService } from "./desktop/service";
+export type { DesktopServiceOptions } from "./desktop/service";
+export { CursorOverlay } from "./desktop/overlay";
+export type { OverlayOptions } from "./desktop/overlay";
+export { expect } from "./sdk/expect";
+export type { Expectation } from "./sdk/expect";
 export { Locator } from "./sdk/locator";
 export type { ByOptions, ByRoleOptions, LocatorContext } from "./sdk/locator";
 export { ActionService } from "./action/service";

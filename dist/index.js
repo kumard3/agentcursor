@@ -1,11 +1,161 @@
 #!/usr/bin/env node
 
+// src/sdk/launch.ts
+import { spawn } from "child_process";
+import { once } from "events";
+import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { fileURLToPath } from "url";
+var CHROME_PATHS = {
+  darwin: [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium"
+  ],
+  linux: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"],
+  win32: [
+    `${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env["PROGRAMFILES(X86)"]}\\Google\\Chrome\\Application\\chrome.exe`,
+    `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
+  ]
+};
+function findChrome(explicit) {
+  const path = explicit ?? process.env.AGENTCURSOR_CHROME ?? (CHROME_PATHS[process.platform] ?? []).find(existsSync);
+  if (!path || !existsSync(path)) {
+    throw new Error("agentcursor: Chrome not found. Pass { executablePath } or set AGENTCURSOR_CHROME.");
+  }
+  return path;
+}
+function extensionDir() {
+  for (const rel of ["../extension", "../../extension"]) {
+    const dir = fileURLToPath(new URL(rel, import.meta.url));
+    if (existsSync(join(dir, "dist", "service-worker.js"))) return dir;
+  }
+  throw new Error("agentcursor: built extension not found. Run `pnpm build` first.");
+}
+async function launchBrowser(port, options = {}) {
+  const chrome = findChrome(options.executablePath);
+  const realProfile = options.userDataDir;
+  const profile = realProfile ?? mkdtempSync(join(tmpdir(), "agentcursor-"));
+  const ext = mkdtempSync(join(tmpdir(), "agentcursor-ext-"));
+  const src = extensionDir();
+  for (const part of ["manifest.json", "dist", "icons"]) cpSync(join(src, part), join(ext, part), { recursive: true });
+  writeFileSync(join(ext, "launch.json"), JSON.stringify({ port }));
+  const args = [
+    "--remote-debugging-pipe",
+    `--user-data-dir=${profile}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-search-engine-choice-screen",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    ...options.headless ? ["--headless=new"] : [],
+    ...options.accessibility ? ["--force-renderer-accessibility"] : [],
+    ...options.args ?? [],
+    "about:blank"
+  ];
+  const proc = spawn(chrome, args, { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  const cdp = new PipeCdp(proc.stdio[3], proc.stdio[4]);
+  const exited = once(proc, "exit");
+  const cleanup = async () => {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      await cdp.send("Browser.close", {}, 3e3).catch(() => proc.kill());
+      await Promise.race([exited, delay(5e3).then(() => proc.kill("SIGKILL"))]);
+    }
+    rmSync(ext, { recursive: true, force: true, maxRetries: 5 });
+    if (!realProfile) rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+  };
+  try {
+    await Promise.race([
+      cdp.send("Extensions.loadUnpacked", { path: ext }, 15e3),
+      exited.then(() => {
+        throw new Error(`agentcursor: Chrome exited during launch (${chrome})`);
+      })
+    ]);
+  } catch (err) {
+    await cleanup();
+    throw err;
+  }
+  return { close: cleanup };
+}
+var delay = (ms) => new Promise((r) => setTimeout(r, ms));
+var PipeCdp = class {
+  constructor(out, input) {
+    this.out = out;
+    input.setEncoding("utf8");
+    input.on("data", (chunk) => this.onData(chunk));
+    input.on("error", () => void 0);
+    out.on("error", () => void 0);
+  }
+  out;
+  nextId = 1;
+  buf = "";
+  pending = /* @__PURE__ */ new Map();
+  send(method, params, timeoutMs) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`agentcursor: CDP ${method} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => (clearTimeout(timer), resolve(v)),
+        reject: (e) => (clearTimeout(timer), reject(e))
+      });
+      this.out.write(`${JSON.stringify({ id, method, params })}\0`);
+    });
+  }
+  onData(chunk) {
+    this.buf += chunk;
+    let end;
+    while ((end = this.buf.indexOf("\0")) >= 0) {
+      const msg = JSON.parse(this.buf.slice(0, end));
+      this.buf = this.buf.slice(end + 1);
+      const entry = msg.id === void 0 ? void 0 : this.pending.get(msg.id);
+      if (!entry) continue;
+      this.pending.delete(msg.id);
+      if (msg.error) entry.reject(new Error(`agentcursor: CDP ${msg.error.message}`));
+      else entry.resolve(msg.result);
+    }
+  }
+};
+
+// src/server/proxy.ts
+import { spawn as spawn3 } from "child_process";
+import { openSync } from "fs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListToolsRequestSchema
+} from "@modelcontextprotocol/sdk/types.js";
+
+// src/util/timing.ts
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+var sleepUntil = (perfTime) => sleep(perfTime - performance.now());
+var rand = (min, max) => min + Math.random() * (max - min);
+
 // src/server/create.ts
 import { readFileSync, statSync } from "fs";
-import { tmpdir as tmpdir2 } from "os";
-import { join as join2 } from "path";
-import { fileURLToPath as fileURLToPath2 } from "url";
+import { tmpdir as tmpdir3 } from "os";
+import { join as join3 } from "path";
+import { fileURLToPath as fileURLToPath3 } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// src/protocol/index.ts
+var DEFAULT_WS_PORT = 8930;
+var PROTOCOL_VERSION = 1;
+function buildEvalExpression(fn, args = []) {
+  const argList = args.map((a) => JSON.stringify(a) ?? "undefined").join(",");
+  return `(${fn.trim()})(${argList})`;
+}
 
 // src/path-engine/geometry.ts
 function distance(a, b) {
@@ -228,27 +378,27 @@ function buildTypingSchedule(text3, rng, traits) {
   for (let i = 0; i < text3.length; i++) {
     const ch = text3[i];
     const prev = text3[i - 1];
-    let delay = Math.max(8, rng.gaussian(base2, base2 * 0.35));
+    let delay2 = Math.max(8, rng.gaussian(base2, base2 * 0.35));
     if (first) {
-      delay += traits.reactionMs * rng.range(0.6, 1.1);
+      delay2 += traits.reactionMs * rng.range(0.6, 1.1);
       first = false;
     } else if (prev === " ") {
-      delay += base2 * rng.range(1.5, 3.5);
+      delay2 += base2 * rng.range(1.5, 3.5);
     } else if (prev && ".?!".includes(prev)) {
-      delay += base2 * rng.range(3, 6);
+      delay2 += base2 * rng.range(3, 6);
     } else if (rng.bool(0.06)) {
-      delay += base2 * rng.range(2, 5);
+      delay2 += base2 * rng.range(2, 5);
     }
     if (/[a-zA-Z]/.test(ch) && rng.bool(traits.errorRate)) {
       const wrong = wrongChar(ch, rng);
       if (wrong) {
-        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay) });
+        ops.push({ t: "key", ch: wrong, delayMs: Math.round(delay2) });
         ops.push({ t: "back", delayMs: Math.round(base2 * rng.range(2, 5)) });
         ops.push({ t: "key", ch, delayMs: Math.round(base2 * rng.range(0.8, 1.4)) });
         continue;
       }
     }
-    ops.push({ t: "key", ch, delayMs: Math.round(delay) });
+    ops.push({ t: "key", ch, delayMs: Math.round(delay2) });
   }
   return ops;
 }
@@ -347,7 +497,7 @@ function sampleTraits(rng) {
     precision: rng.range(0.1, 0.26),
     dwellScale: rng.range(0.7, 1.5),
     pressScale: rng.range(0.75, 1.4),
-    wpm: rng.range(180, 420),
+    wpm: rng.range(62, 155),
     errorRate: rng.range(0, 0.05),
     reactionMs: rng.range(180, 520),
     thinkScale: rng.range(0.7, 1.5),
@@ -355,11 +505,6 @@ function sampleTraits(rng) {
     handedness: rng.bool(0.5) ? 1 : -1
   };
 }
-
-// src/util/timing.ts
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
-var sleepUntil = (perfTime) => sleep(perfTime - performance.now());
-var rand = (min, max) => min + Math.random() * (max - min);
 
 // src/action/service.ts
 var ActionService = class {
@@ -451,6 +596,9 @@ var ActionService = class {
   getUrl() {
     return this.driver.getUrl();
   }
+  evaluate(fn, args = []) {
+    return this.driver.evaluate(buildEvalExpression(fn, args));
+  }
   async waitFor(opts) {
     await this.idleDrift();
     return this.driver.waitFor({
@@ -515,8 +663,8 @@ var ActionService = class {
     });
     return { matched, point };
   }
-  async pressKey(key, stealth) {
-    await this.driver.pressKey(key, mode(stealth));
+  async pressKey(key2, stealth) {
+    await this.driver.pressKey(key2, mode(stealth));
   }
   async ensureStart() {
     if (this.lastPos) return this.lastPos;
@@ -604,8 +752,8 @@ function rankByText(elements, query) {
 // src/desktop/service.ts
 import { execFile as execFile2 } from "child_process";
 import { mkdtemp, readFile, rm } from "fs/promises";
-import { tmpdir } from "os";
-import { join } from "path";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join2 } from "path";
 import { promisify } from "util";
 
 // src/drivers/nut.ts
@@ -717,8 +865,8 @@ var KEY_ALIASES = {
   "\\": "Backslash",
   "`": "Grave"
 };
-function parseKeyCombo(combo) {
-  const parts = combo.split("+").map((p) => p.trim()).filter(Boolean);
+function parseKeyCombo(combo2) {
+  const parts = combo2.split("+").map((p) => p.trim()).filter(Boolean);
   if (!parts.length) throw new Error("Empty key combo");
   return parts.map((part) => {
     const lower = part.toLowerCase();
@@ -726,11 +874,11 @@ function parseKeyCombo(combo) {
     if (/^[a-z]$/.test(lower)) return lower.toUpperCase();
     if (/^[0-9]$/.test(lower)) return `Num${lower}`;
     if (/^f([1-9]|1[0-9]|2[0-4])$/.test(lower)) return lower.toUpperCase();
-    throw new Error(`Unknown key "${part}" in "${combo}"`);
+    throw new Error(`Unknown key "${part}" in "${combo2}"`);
   });
 }
-async function pressCombo(nut, combo, holdMs) {
-  const keys = parseKeyCombo(combo).map((name) => nut.Key[name]);
+async function pressCombo(nut, combo2, holdMs) {
+  const keys = parseKeyCombo(combo2).map((name) => nut.Key[name]);
   await nut.keyboard.pressKey(...keys);
   await sleep(holdMs);
   await nut.keyboard.releaseKey(...keys.reverse());
@@ -738,16 +886,16 @@ async function pressCombo(nut, combo, holdMs) {
 
 // src/desktop/ax.ts
 import { execFile } from "child_process";
-import { existsSync } from "fs";
-import { fileURLToPath } from "url";
-var helperPath = fileURLToPath(new URL("./native/agentcursor-ax", import.meta.url));
-var desktopSupported = () => process.platform === "darwin" && existsSync(helperPath);
-function ax(args, timeoutMs = 2e4) {
+import { existsSync as existsSync2 } from "fs";
+import { fileURLToPath as fileURLToPath2 } from "url";
+var helperPath = fileURLToPath2(new URL("./native/agentcursor-ax", import.meta.url));
+var desktopSupported = () => process.platform === "darwin" && existsSync2(helperPath);
+function ax(args, timeoutMs = 2e4, stdin) {
   if (process.platform !== "darwin") {
     return Promise.reject(new Error("Desktop control currently supports macOS only."));
   }
   return new Promise((resolve, reject) => {
-    execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+    const child = execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
       if (err?.code === "ENOENT") {
         return reject(new Error(`Desktop helper missing at ${helperPath}. Run \`pnpm build\`.`));
       }
@@ -760,19 +908,169 @@ function ax(args, timeoutMs = 2e4) {
       if (parsed?.error) return reject(new Error(parsed.error));
       resolve(parsed);
     });
+    if (stdin !== void 0) child.stdin?.end(stdin);
   });
 }
 var appArgs = (app) => app === void 0 ? [] : typeof app === "number" ? ["--pid", String(app)] : ["--app", app];
 
+// src/desktop/overlay.ts
+import { spawn as spawn2 } from "child_process";
+var CursorOverlay = class {
+  constructor(opts = {}) {
+    this.opts = opts;
+  }
+  opts;
+  proc = null;
+  child() {
+    if (!this.proc || this.proc.exitCode !== null) {
+      const args = ["overlay"];
+      if (this.opts.color) args.push("--color", this.opts.color);
+      if (this.opts.label) args.push("--label", this.opts.label);
+      this.proc = spawn2(helperPath, args, { stdio: ["pipe", "ignore", "ignore"] });
+      this.proc.on("error", () => this.proc = null);
+    }
+    return this.proc;
+  }
+  at(p) {
+    this.child().stdin?.write(`${Math.round(p.x)} ${Math.round(p.y)}
+`);
+  }
+  /** Follows a move with the same timing the posted events use. */
+  async play(samples) {
+    const start = Date.now();
+    for (const s of samples) {
+      const wait = s.t - (Date.now() - start);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      this.at(s);
+    }
+  }
+  close() {
+    this.proc?.stdin?.end("bye\n");
+    this.proc = null;
+  }
+};
+
+// src/desktop/post.ts
+function post(pid, plan) {
+  const args = pid === void 0 ? ["post"] : ["post", "--pid", String(pid)];
+  return ax(args, 12e4, JSON.stringify(plan));
+}
+var FLAGS = { cmd: 1 << 20, shift: 1 << 17, alt: 1 << 19, ctrl: 1 << 18, fn: 1 << 23 };
+var CODES = {
+  a: 0,
+  s: 1,
+  d: 2,
+  f: 3,
+  h: 4,
+  g: 5,
+  z: 6,
+  x: 7,
+  c: 8,
+  v: 9,
+  b: 11,
+  q: 12,
+  w: 13,
+  e: 14,
+  r: 15,
+  y: 16,
+  t: 17,
+  o: 31,
+  u: 32,
+  i: 34,
+  p: 35,
+  l: 37,
+  j: 38,
+  k: 40,
+  n: 45,
+  m: 46,
+  "1": 18,
+  "2": 19,
+  "3": 20,
+  "4": 21,
+  "5": 23,
+  "6": 22,
+  "7": 26,
+  "8": 28,
+  "9": 25,
+  "0": 29,
+  enter: 36,
+  return: 36,
+  tab: 48,
+  space: 49,
+  backspace: 51,
+  delete: 51,
+  escape: 53,
+  esc: 53,
+  left: 123,
+  right: 124,
+  down: 125,
+  up: 126,
+  home: 115,
+  end: 119,
+  pageup: 116,
+  pagedown: 121
+};
+function combo(keys) {
+  let flags = 0;
+  let code;
+  for (const raw of keys.toLowerCase().split("+")) {
+    const part = raw.trim();
+    if (part === "cmd" || part === "command" || part === "meta") flags |= FLAGS.cmd;
+    else if (part === "shift") flags |= FLAGS.shift;
+    else if (part === "alt" || part === "option") flags |= FLAGS.alt;
+    else if (part === "ctrl" || part === "control") flags |= FLAGS.ctrl;
+    else code = CODES[part];
+  }
+  if (code === void 0) throw new Error(`agentcursor: no key code for '${keys}'`);
+  return { code, flags, delayMs: 0 };
+}
+function keyOps(schedule) {
+  return schedule.map(
+    (op) => op.t === "back" ? { code: CODES.backspace, delayMs: op.delayMs } : { ch: op.ch, delayMs: op.delayMs }
+  );
+}
+
 // src/desktop/service.ts
 var run = promisify(execFile2);
 var DesktopService = class {
-  constructor(persona) {
+  constructor(persona, opts = {}) {
     this.persona = persona;
+    this.opts = opts;
   }
   persona;
+  opts;
   view = null;
   currentPid;
+  /** This service's own cursor, used in background mode instead of the system pointer. */
+  pos = { x: 0, y: 0 };
+  overlay = null;
+  // Refs stick to the same control across reads of the same app, so an agent's
+  // earlier ref stays valid and reads can be diffed. The value is left out of
+  // the key so typing into a field does not rename it.
+  refKeys = /* @__PURE__ */ new Map();
+  refCounter = 0;
+  get background() {
+    return this.opts.background ?? false;
+  }
+  get pointer() {
+    const want = this.opts.showCursor;
+    if (!want || !this.background) return null;
+    this.overlay ??= new CursorOverlay(typeof want === "object" ? want : {});
+    return this.overlay;
+  }
+  /** Stops drawing this session's cursor. */
+  close() {
+    this.overlay?.close();
+    this.overlay = null;
+  }
+  /** Where this service's cursor is (background mode); the system pointer otherwise. */
+  cursor() {
+    if (this.background) return Promise.resolve(this.pos);
+    return loadNut().then(async (nut) => {
+      const p = await nut.mouse.getPosition();
+      return { x: p.x, y: p.y };
+    });
+  }
   permissions() {
     return ax(["permissions"]);
   }
@@ -783,6 +1081,7 @@ var DesktopService = class {
     return ax(["apps"]);
   }
   async open(app) {
+    if (this.background) return this.openInBackground(app);
     const before = (await this.apps()).find((a) => a.active)?.pid;
     await run("open", ["-a", app]).catch((e) => {
       throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
@@ -800,6 +1099,28 @@ var DesktopService = class {
     }
     throw new Error(`Opened "${app}" but it did not come to the front.`);
   }
+  /** Launch or attach without bringing the app to the front (`open -g`). */
+  async openInBackground(app) {
+    const running = (a) => {
+      const name = a.name.toLowerCase();
+      const want = app.toLowerCase();
+      return name === want || name.includes(want) || want.includes(name);
+    };
+    let found = (await this.apps()).find(running);
+    if (!found) {
+      await run("open", ["-g", "-a", app]).catch((e) => {
+        throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
+      });
+      for (let i = 0; i < 40 && !found; i++) {
+        await sleep(250);
+        found = (await this.apps()).find(running);
+      }
+    }
+    if (!found) throw new Error(`Opened "${app}" but it did not start.`);
+    this.currentPid = found.pid;
+    this.view = null;
+    return found;
+  }
   async read(opts = {}) {
     const snap = await ax([
       "snapshot",
@@ -807,13 +1128,17 @@ var DesktopService = class {
       "--max",
       String(opts.max ?? 150)
     ]);
+    if (snap.pid !== this.currentPid) {
+      this.refKeys.clear();
+      this.refCounter = 0;
+    }
     this.currentPid = snap.pid;
     this.view = {
       app: { name: snap.name, pid: snap.pid, bundleId: snap.bundleId },
       window: snap.window,
       truncated: snap.truncated,
-      elements: snap.elements.map((e, i) => ({
-        ref: `d${i + 1}`,
+      elements: snap.elements.map((e) => ({
+        ref: this.refFor(e),
         role: e.role,
         name: e.name,
         value: e.value,
@@ -833,8 +1158,16 @@ var DesktopService = class {
     await this.front(target2.pid);
     await this.moveHuman(target2.point, target2.width);
     const traits = this.persona.traits();
-    await sleep(sampleDwellMs(this.persona.rng, traits.dwellScale));
-    await pressButton(await loadNut(), t.button ?? "left", samplePressMs(this.persona.rng, traits.pressScale), t.double);
+    const dwellMs = sampleDwellMs(this.persona.rng, traits.dwellScale);
+    const pressMs = samplePressMs(this.persona.rng, traits.pressScale);
+    if (this.background) {
+      await post(target2.pid ?? this.currentPid, {
+        click: { x: target2.point.x, y: target2.point.y, button: t.button, double: t.double, dwellMs, pressMs }
+      });
+    } else {
+      await sleep(dwellMs);
+      await pressButton(await loadNut(), t.button ?? "left", pressMs, t.double);
+    }
     return describe(target2);
   }
   async move(t) {
@@ -846,25 +1179,36 @@ var DesktopService = class {
   async type(opts) {
     if (opts.ref || opts.text || typeof opts.x === "number") await this.click(opts);
     else await this.front(this.currentPid);
+    this.persona.tick();
+    const schedule = this.persona.keySchedule(opts.value);
+    if (this.background) {
+      const keys = [
+        ...opts.clear ? [{ ...combo("cmd+a"), delayMs: 60 }, { ...combo("backspace"), delayMs: 40 }] : [],
+        ...keyOps(schedule) ?? [],
+        ...opts.submit ? [{ ...combo("enter"), delayMs: samplePressMs(this.persona.rng) }] : []
+      ];
+      await post(this.currentPid, { keys });
+      return;
+    }
     const nut = await loadNut();
     if (opts.clear) {
       await pressCombo(nut, process.platform === "darwin" ? "cmd+a" : "ctrl+a", 60);
       await pressCombo(nut, "backspace", 40);
     }
-    this.persona.tick();
     const base2 = 12e3 / this.persona.traits().wpm;
-    await typeText(nut, opts.value, {
-      schedule: this.persona.keySchedule(opts.value),
-      perKeyMinMs: base2 * 0.6,
-      perKeyMaxMs: base2 * 1.8
-    });
+    await typeText(nut, opts.value, { schedule, perKeyMinMs: base2 * 0.6, perKeyMaxMs: base2 * 1.8 });
     if (opts.submit) await pressCombo(nut, "enter", samplePressMs(this.persona.rng));
   }
-  async key(combo) {
+  async key(combo2) {
     await this.front(this.currentPid);
     this.persona.tick();
     await sleep(this.persona.thinkTimeMs(0));
-    await pressCombo(await loadNut(), combo, samplePressMs(this.persona.rng, this.persona.traits().pressScale));
+    const pressMs = samplePressMs(this.persona.rng, this.persona.traits().pressScale);
+    if (this.background) {
+      await post(this.currentPid, { keys: [{ ...combo(combo2), delayMs: 0 }] });
+      return;
+    }
+    await pressCombo(await loadNut(), combo2, pressMs);
   }
   async scroll(opts) {
     if (opts.ref || opts.text || typeof opts.x === "number") {
@@ -876,7 +1220,8 @@ var DesktopService = class {
     }
     this.persona.tick();
     const steps = Math.max(3, Math.round(Math.abs(opts.dy || opts.dx || 0) / this.persona.rng.range(80, 140)));
-    await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
+    if (this.background) await post(this.currentPid, { scroll: { dx: opts.dx ?? 0, dy: opts.dy, steps } });
+    else await scrollSteps(await loadNut(), opts.dx ?? 0, opts.dy, steps);
     this.view = null;
   }
   async screenshot(opts = {}) {
@@ -892,8 +1237,8 @@ var DesktopService = class {
       rect = { x: info.window.x, y: info.window.y, width: info.window.w, height: info.window.h };
       label = `${info.name} window`;
     }
-    const dir = await mkdtemp(join(tmpdir(), "agentcursor-shot-"));
-    const file = join(dir, "shot.jpg");
+    const dir = await mkdtemp(join2(tmpdir2(), "agentcursor-shot-"));
+    const file = join2(dir, "shot.jpg");
     try {
       await run("screencapture", ["-x", "-t", "jpg", `-R${rect.x},${rect.y},${rect.width},${rect.height}`, file]);
       const maxWidth = opts.maxWidth ?? 1024;
@@ -925,6 +1270,15 @@ var DesktopService = class {
       from = to;
     }
   }
+  refFor(e) {
+    const key2 = `${e.role}|${e.name}|${Math.round(e.x / 8)},${Math.round(e.y / 8)}`;
+    let ref = this.refKeys.get(key2);
+    if (!ref) {
+      ref = `d${++this.refCounter}`;
+      this.refKeys.set(key2, ref);
+    }
+    return ref;
+  }
   element(ref) {
     const el = this.view?.elements.find((e) => e.ref === ref);
     if (!el) throw new Error(`Unknown ref '${ref}'. Refs expire after scrolling or switching apps; call desktop_read again.`);
@@ -954,15 +1308,21 @@ var DesktopService = class {
     };
   }
   async moveHuman(to, width) {
-    const nut = await loadNut();
-    const pos = await nut.mouse.getPosition();
-    const from = { x: pos.x, y: pos.y };
+    const from = await this.cursor();
     this.persona.tick();
     await sleep(this.persona.thinkTimeMs(distance(from, to)));
-    await playPath(nut, generateMove(from, to, this.persona.moveOptions(width)));
+    const samples = generateMove(from, to, this.persona.moveOptions(width));
+    if (this.background) {
+      const drawn = this.pointer?.play(samples);
+      await post(this.currentPid, { moves: samples });
+      await drawn;
+      this.pos = to;
+      return;
+    }
+    await playPath(await loadNut(), samples);
   }
   async front(pid) {
-    if (pid) await ax(["activate", "--pid", String(pid)]).catch(() => void 0);
+    if (pid && !this.background) await ax(["activate", "--pid", String(pid)]).catch(() => void 0);
   }
 };
 function describe(target2) {
@@ -1059,14 +1419,17 @@ var ExtensionDriver = class {
   async drag(args) {
     await this.transport.send({ kind: "drag", ...args }, 6e4);
   }
-  async pressKey(key, mode2) {
-    await this.transport.send({ kind: "pressKey", key, mode: mode2 }, 1e4);
+  async pressKey(key2, mode2) {
+    await this.transport.send({ kind: "pressKey", key: key2, mode: mode2 }, 1e4);
   }
   async resolveLocator(spec, opts) {
     return await this.transport.send(
       { kind: "resolveLocator", spec, timeoutMs: opts.timeoutMs, scrollIntoView: opts.scrollIntoView },
       opts.timeoutMs + 5e3
     );
+  }
+  async evaluate(expression) {
+    return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
   }
 };
 
@@ -1143,8 +1506,8 @@ var OsCursorDriver = class {
     await sleep(rand(40, 90));
     await nut.mouse.releaseButton(button);
   }
-  async pressKey(key, mode2) {
-    await this.transport.send({ kind: "pressKey", key, mode: mode2 });
+  async pressKey(key2, mode2) {
+    await this.transport.send({ kind: "pressKey", key: key2, mode: mode2 });
   }
   // Locator resolution is DOM-side, so it goes through the extension bridge even
   // in OS mode (only the cursor itself is driven by nut-js).
@@ -1153,6 +1516,9 @@ var OsCursorDriver = class {
       { kind: "resolveLocator", spec, timeoutMs: opts.timeoutMs, scrollIntoView: opts.scrollIntoView },
       opts.timeoutMs + 5e3
     );
+  }
+  async evaluate(expression) {
+    return this.transport.send({ kind: "evaluate", expression }, 6e4);
   }
   async cursorState() {
     const nut = await loadNut();
@@ -1184,12 +1550,43 @@ var OsCursorDriver = class {
   }
 };
 
-// src/protocol/index.ts
-var DEFAULT_WS_PORT = 8930;
-var PROTOCOL_VERSION = 1;
-
 // src/server/desktop-tools.ts
 import { z } from "zod";
+
+// src/util/diff.ts
+function diffRead(previous, next) {
+  const pending = /* @__PURE__ */ new Map();
+  for (const line of previous) {
+    const list = pending.get(key(line));
+    if (list) list.push(line);
+    else pending.set(key(line), [line]);
+  }
+  const added = [];
+  let moved = 0;
+  let unchanged = 0;
+  for (const line of next) {
+    const list = pending.get(key(line));
+    const match = list?.shift();
+    if (match === void 0) added.push(line);
+    else if (match === line) unchanged++;
+    else moved++;
+  }
+  const removed = [...pending.values()].flat();
+  if (!added.length && !removed.length && !moved) return "no change since the last read";
+  const summary = `(${moved ? `${moved} moved, ` : ""}${unchanged} unchanged, ${next.length} total)`;
+  return [...removed.map((l) => `- ${l}`), ...added.map((l) => `+ ${l}`), summary].join("\n");
+}
+function key(line) {
+  return line.replace(/ @-?\d+,-?\d+/, "");
+}
+function readOrDiff(previous, next) {
+  const full = next.join("\n");
+  if (!previous) return full;
+  const diff = diffRead(previous, next);
+  return diff.length < full.length ? diff : full;
+}
+
+// src/server/desktop-tools.ts
 function text(body) {
   return { content: [{ type: "text", text: body }] };
 }
@@ -1200,6 +1597,7 @@ var target = {
   y: z.number().optional(),
   app: z.string().optional()
 };
+var lastRead = /* @__PURE__ */ new WeakMap();
 function registerDesktopTools(server, desktop) {
   server.registerTool(
     "desktop_apps",
@@ -1224,15 +1622,19 @@ function registerDesktopTools(server, desktop) {
       inputSchema: {
         app: z.string().optional(),
         find: z.string().optional(),
-        max: z.number().int().min(1).max(500).optional()
+        max: z.number().int().min(1).max(500).optional(),
+        changes: z.boolean().optional().describe("only what changed since your last read (refs stay valid)")
       }
     },
-    async ({ app, find, max }) => {
+    async ({ app, find, max, changes }) => {
       if (find) {
         const matches = await desktop.find(find, { app });
         return text(matches.length ? matches.map(formatElement).join("\n") : `Nothing matching "${find}".`);
       }
-      return text(formatView(await desktop.read({ app, max })));
+      const lines = formatView(await desktop.read({ app, max })).split("\n");
+      const body = changes ? readOrDiff(lastRead.get(desktop), lines) : lines.join("\n");
+      lastRead.set(desktop, lines);
+      return text(body);
     }
   );
   server.registerTool(
@@ -1324,6 +1726,7 @@ import { z as z2 } from "zod";
 function text2(body) {
   return { content: [{ type: "text", text: body }] };
 }
+var lastRead2 = /* @__PURE__ */ new WeakMap();
 function registerTools(server, action) {
   server.registerTool(
     "read_page",
@@ -1331,12 +1734,16 @@ function registerTools(server, action) {
       description: "Read the current page: interactive elements with stable [ref] handles, their roles/names and on-screen rectangles, plus visible text. Call before clicking or typing by ref.",
       inputSchema: {
         maxElements: z2.number().int().min(1).max(200).optional(),
-        includeText: z2.boolean().optional()
+        includeText: z2.boolean().optional(),
+        changes: z2.boolean().optional().describe("only what changed since your last read (refs stay valid)")
       }
     },
-    async ({ maxElements, includeText }) => {
+    async ({ maxElements, includeText, changes }) => {
       const snap = await action.readPage(maxElements ?? 60, includeText ?? true);
-      return text2(formatSnapshot(snap));
+      const lines = formatSnapshot(snap);
+      const body = changes ? readOrDiff(lastRead2.get(action), lines) : lines.join("\n");
+      lastRead2.set(action, lines);
+      return text2(body);
     }
   );
   server.registerTool(
@@ -1431,9 +1838,9 @@ function registerTools(server, action) {
         stealth: z2.boolean().optional()
       }
     },
-    async ({ key, stealth }) => {
-      await action.pressKey(key, stealth);
-      return text2(`pressed ${key}`);
+    async ({ key: key2, stealth }) => {
+      await action.pressKey(key2, stealth);
+      return text2(`pressed ${key2}`);
     }
   );
   server.registerTool(
@@ -1466,6 +1873,20 @@ function registerTools(server, action) {
     "get_url",
     { description: "Return the active tab's current URL.", inputSchema: {} },
     async () => text2(await action.getUrl())
+  );
+  server.registerTool(
+    "evaluate",
+    {
+      description: "Run a JavaScript function in the active page and return its JSON result. Pass a function source string, e.g. `() => document.title` or `async () => (await fetch('/api/x', { method: 'POST', credentials: 'include' })).status`. Runs in the page realm via CDP, so it uses the page's own cookies/session, awaits promises, and is not blocked by the page CSP. Return value must be JSON-serializable. Use for reads and requests the UI has no button for; the debugger banner shows while it runs.",
+      inputSchema: {
+        function: z2.string(),
+        args: z2.array(z2.any()).optional()
+      }
+    },
+    async ({ function: fn, args }) => {
+      const result = await action.evaluate(fn, args);
+      return text2(typeof result === "string" ? result : JSON.stringify(result, null, 2));
+    }
   );
   server.registerTool(
     "wait_for",
@@ -1597,34 +2018,29 @@ function formatSnapshot(snap) {
   const lines = [
     `URL: ${snap.url}`,
     `Title: ${snap.title}`,
-    `Viewport: ${snap.viewport.width}x${snap.viewport.height} (scroll ${snap.viewport.scrollX},${snap.viewport.scrollY}, dpr ${snap.viewport.devicePixelRatio})`,
+    `Viewport: ${snap.viewport.width}x${snap.viewport.height} scroll ${snap.viewport.scrollX},${snap.viewport.scrollY} (element @x,y = center)`,
     `Elements (${snap.elements.length}):`
   ];
-  for (const e of snap.elements) {
-    const r = e.rect;
-    const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-    const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
-    const vis = e.visible !== void 0 ? e.visible ? " visible" : " hidden" : "";
-    const vp = e.inViewport !== void 0 ? e.inViewport ? " in-view" : " off-view" : "";
-    lines.push(
-      `  [${e.ref}] ${e.role}${name} <${e.tag}>${val} @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vis}${vp}`
-    );
-  }
-  if (snap.text) lines.push("", "Text:", truncate(snap.text, 4e3));
-  return lines.join("\n");
+  for (const e of snap.elements) lines.push(formatElement2(e));
+  if (snap.text) lines.push("", "Text:", ...truncate(snap.text, 4e3).split("\n"));
+  return lines;
 }
 function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n)}\u2026` : s;
 }
 function formatElement2(e) {
-  const r = e.rect;
   const name = e.name ? ` "${truncate(e.name, 60)}"` : "";
-  const vp = e.inViewport === false ? " off-view" : "";
-  return `  [${e.ref}] ${e.role}${name} <${e.tag}> @ ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}${vp}`;
+  const val = e.value ? ` value="${truncate(e.value, 40)}"` : "";
+  const tag = e.tag && e.tag !== e.role ? ` <${e.tag}>` : "";
+  const flags = `${e.visible === false ? " hidden" : ""}${e.inViewport === false ? " off-view" : ""}`;
+  const cx = Math.round(e.rect.x + e.rect.width / 2);
+  const cy = Math.round(e.rect.y + e.rect.height / 2);
+  return `[${e.ref}] ${e.role}${name}${val}${tag} @${cx},${cy}${flags}`;
 }
 
 // src/server/transport.ts
 import { randomUUID } from "crypto";
+import { once as once2 } from "events";
 import { WebSocket, WebSocketServer } from "ws";
 var NOT_CONNECTED = "AgentCursor extension is not connected. Load the extension and open a normal browser tab.";
 var ExtensionTransport = class {
@@ -1657,6 +2073,11 @@ var ExtensionTransport = class {
       });
       ws.on("error", () => void 0);
     });
+  }
+  /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
+  async listening() {
+    if (!this.wss.address()) await once2(this.wss, "listening");
+    return this.wss.address().port;
   }
   get connected() {
     return this.socket?.readyState === WebSocket.OPEN;
@@ -1699,7 +2120,7 @@ var ExtensionTransport = class {
 };
 
 // src/server/create.ts
-var SELF = fileURLToPath2(import.meta.url);
+var SELF = fileURLToPath3(import.meta.url);
 var BUILD_ID = Math.round(statSync(SELF).mtimeMs);
 function readVersion() {
   try {
@@ -1720,7 +2141,10 @@ function createRuntime(ports2) {
   const driver = (process.env.AGENTCURSOR_DRIVER ?? "extension").toLowerCase() === "os" ? new OsCursorDriver(extension) : new ExtensionDriver(extension);
   return {
     action: new ActionService(driver, persona),
-    desktop: new DesktopService(persona),
+    desktop: new DesktopService(persona, {
+      background: process.env.AGENTCURSOR_BACKGROUND === "1",
+      showCursor: process.env.AGENTCURSOR_SHOW_CURSOR === "1"
+    }),
     extension,
     persona,
     ports: ports2
@@ -1746,29 +2170,273 @@ function instructions(ports2, browser, desktop) {
     `If a tool reports missing permissions or a disconnected extension, send the user to http://127.0.0.1:${ports2.http} to finish setup.`
   ].filter(Boolean).join("\n");
 }
-var logFile = (port) => join2(tmpdir2(), `agentcursor-${port}.log`);
+var logFile = (port) => join3(tmpdir3(), `agentcursor-${port}.log`);
+
+// src/server/proxy.ts
+var base = (port) => `http://127.0.0.1:${port}`;
+async function health(port) {
+  try {
+    const res = await fetch(`${base(port)}/health`, { signal: AbortSignal.timeout(1500) });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+async function until(check, timeoutMs) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await check()) return true;
+    await sleep(150);
+  }
+  return false;
+}
+async function ensureDaemon(port) {
+  const current = await health(port);
+  if (current && current.buildId >= BUILD_ID) return;
+  if (current) {
+    await fetch(`${base(port)}/shutdown`, { method: "POST" }).catch(() => void 0);
+    await until(async () => !await health(port), 5e3);
+  }
+  const log = openSync(logFile(port), "a");
+  spawn3(process.execPath, [SELF, "serve", "--idle-exit"], {
+    detached: true,
+    stdio: ["ignore", log, log],
+    env: process.env
+  }).unref();
+  const ready = await until(async () => ((await health(port))?.buildId ?? 0) >= BUILD_ID, 15e3);
+  if (!ready) throw new Error(`agentcursor could not start its local service on port ${port}. Log: ${logFile(port)}`);
+}
+async function connectClient(port) {
+  const client = new Client({ name: "agentcursor-stdio", version: readVersion() });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${base(port)}/mcp`)));
+  return client;
+}
+var slim = (t) => {
+  const { $schema, ...schema } = t.inputSchema;
+  const { execution: _execution, ...rest2 } = t;
+  return { ...rest2, inputSchema: schema };
+};
+var unreachable = (e) => {
+  const err = e;
+  return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up/i.test(`${err?.message} ${err?.cause?.code}`);
+};
+async function runStdioProxy(port) {
+  await ensureDaemon(port);
+  let client = await connectClient(port);
+  const call = async (fn) => {
+    try {
+      return await fn(client);
+    } catch (e) {
+      if (!unreachable(e)) throw e;
+      await ensureDaemon(port);
+      client = await connectClient(port);
+      return fn(client);
+    }
+  };
+  const server = new Server(
+    { name: "agentcursor", version: readVersion() },
+    { capabilities: { tools: {}, prompts: {} }, instructions: client.getInstructions() }
+  );
+  const long = { timeout: 15 * 6e4 };
+  server.setRequestHandler(ListToolsRequestSchema, async (req) => {
+    const res = await call((c) => c.listTools(req.params));
+    return { ...res, tools: res.tools.map(slim) };
+  });
+  server.setRequestHandler(CallToolRequestSchema, (req) => call((c) => c.callTool(req.params, void 0, long)));
+  server.setRequestHandler(ListPromptsRequestSchema, (req) => call((c) => c.listPrompts(req.params)));
+  server.setRequestHandler(GetPromptRequestSchema, (req) => call((c) => c.getPrompt(req.params)));
+  await server.connect(new StdioServerTransport());
+  setInterval(() => void health(port), 6e4).unref();
+}
+
+// src/cli/launch.ts
+function parseFlags(rest2) {
+  const flags = { headless: false };
+  for (let i = 0; i < rest2.length; i++) {
+    const raw = rest2[i];
+    if (!raw.startsWith("--")) continue;
+    const eq = raw.indexOf("=");
+    const name = raw.slice(2, eq === -1 ? void 0 : eq);
+    if (name === "headless") {
+      flags.headless = true;
+      continue;
+    }
+    if (!["user-data-dir", "profile", "chrome", "executable-path", "port"].includes(name)) {
+      throw new Error(`unknown flag --${name}`);
+    }
+    const value = eq === -1 ? rest2[++i] : raw.slice(eq + 1);
+    if (value === void 0) throw new Error(`--${name} needs a value`);
+    if (name === "user-data-dir" || name === "profile") flags.userDataDir = value;
+    else if (name === "chrome" || name === "executable-path") flags.executablePath = value;
+    else flags.port = Number(value);
+  }
+  return flags;
+}
+async function launchCli(ports2, rest2) {
+  let flags;
+  try {
+    flags = parseFlags(rest2);
+  } catch (err) {
+    process.stderr.write(`agentcursor launch: ${err.message}
+`);
+    process.exit(1);
+  }
+  const wsPort = flags.port ?? ports2.ws;
+  await ensureDaemon(ports2.http);
+  let browser;
+  try {
+    browser = await launchBrowser(wsPort, {
+      headless: flags.headless,
+      userDataDir: flags.userDataDir,
+      executablePath: flags.executablePath
+    });
+  } catch (err) {
+    process.stderr.write(`agentcursor launch: ${err.message}
+`);
+    process.exit(1);
+  }
+  const where = flags.userDataDir ? `profile ${flags.userDataDir}` : "a throwaway profile";
+  process.stderr.write(
+    `agentcursor: browser up on ${where}${flags.headless ? " (headless)" : ""}, wired to ws://127.0.0.1:${wsPort}. Drive it from your agent (agentcursor read_page / click / evaluate ...). Ctrl-C to stop.
+`
+  );
+  const stop = async () => {
+    await browser.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  await new Promise(() => {
+  });
+}
+
+// src/cli/run.ts
+import { writeFile } from "fs/promises";
+import { tmpdir as tmpdir4 } from "os";
+import { join as join4 } from "path";
+async function runTool(port, argv) {
+  const name = argv[0]?.replace(/-/g, "_");
+  await ensureDaemon(port);
+  const client = await connectClient(port);
+  const tools = (await client.listTools()).tools ?? [];
+  if (!name || name === "help" || name === "tools" || name === "--help" || name === "-h") {
+    process.stdout.write(usage(tools, name === "tools"));
+    return 0;
+  }
+  const tool = tools.find((t) => t.name === name);
+  if (!tool) {
+    process.stderr.write(`agentcursor: unknown command '${argv[0]}'. Try: agentcursor help
+`);
+    return 1;
+  }
+  const args = parseArgs(tool, argv.slice(1));
+  const result = await client.callTool({ name, arguments: args }, void 0, { timeout: 15 * 6e4 });
+  for (const part of result.content ?? []) {
+    if (part.type === "text") process.stdout.write(`${part.text}
+`);
+    else if (part.type === "image" && part.data) process.stdout.write(`${await saveImage(part.data, part.mimeType)}
+`);
+  }
+  return result.isError ? 1 : 0;
+}
+async function saveImage(data, mimeType = "image/png") {
+  const ext = mimeType.includes("jpeg") ? "jpg" : "png";
+  const file = join4(process.env.AGENTCURSOR_OUT ?? tmpdir4(), `agentcursor-${Date.now()}.${ext}`);
+  await writeFile(file, Buffer.from(data, "base64"));
+  return file;
+}
+function parseArgs(tool, rest2) {
+  const props = tool.inputSchema.properties ?? {};
+  const order = Object.keys(props);
+  const args = {};
+  let next = 0;
+  for (let i = 0; i < rest2.length; i++) {
+    const item = rest2[i];
+    if (item.startsWith("--")) {
+      const [flag, inline] = splitFlag(item.slice(2));
+      const type = props[flag]?.type;
+      if (type === "boolean" && inline === void 0) {
+        const peek = rest2[i + 1];
+        const explicit = peek === "true" || peek === "false";
+        args[flag] = explicit ? peek === "true" : true;
+        if (explicit) i++;
+      } else args[flag] = coerce(inline ?? rest2[++i] ?? "", type);
+      continue;
+    }
+    while (next < order.length && order[next] in args) next++;
+    const key2 = order[next++];
+    if (!key2) throw new Error(`agentcursor: too many arguments for ${tool.name}`);
+    args[key2] = coerce(item, props[key2]?.type);
+  }
+  return args;
+}
+function splitFlag(s) {
+  const eq = s.indexOf("=");
+  return eq === -1 ? [s, void 0] : [s.slice(0, eq), s.slice(eq + 1)];
+}
+function coerce(value, type) {
+  if (type === "number" || type === "integer") {
+    const n = Number(value);
+    if (Number.isNaN(n)) throw new Error(`agentcursor: '${value}' is not a number`);
+    return n;
+  }
+  if (type === "boolean") return value !== "false" && value !== "0";
+  return value;
+}
+function usage(tools, full) {
+  const lines = [
+    "agentcursor: a visible human cursor for browser tabs and Mac apps.",
+    "",
+    "  agentcursor <command> [positional...] [--flag value]",
+    "",
+    "Positionals fill a command's parameters in the order listed below.",
+    "State (page, [refs], frontmost app) is kept by one background service, so commands chain.",
+    "",
+    "Browser (needs the Chrome extension):"
+  ];
+  const line = (t) => {
+    const params = Object.entries(t.inputSchema.properties ?? {}).map(([k, v]) => v.enum ? `${k}=${v.enum.join("|")}` : k).join(" ");
+    const desc = full ? `
+      ${t.description ?? ""}` : "";
+    return `  ${t.name.padEnd(19)} ${params}${desc}`;
+  };
+  for (const t of tools.filter((t2) => !t2.name.startsWith("desktop_"))) lines.push(line(t));
+  const desktop = tools.filter((t) => t.name.startsWith("desktop_"));
+  if (desktop.length) {
+    lines.push("", "Any Mac app (computer use; read is text, not pixels):");
+    for (const t of desktop) lines.push(line(t));
+  }
+  lines.push(
+    "",
+    "Also: agentcursor launch [--user-data-dir DIR] [--chrome PATH] [--headless] (attach a real-profile browser in the background)",
+    "      agentcursor setup | serve | mcp (stdio MCP server) | tools (same list with full descriptions)",
+    "Screenshots are written to a file and the path is printed. AGENTCURSOR_OUT sets the directory.",
+    ""
+  );
+  return lines.join("\n");
+}
 
 // src/server/http.ts
 import { createServer } from "http";
-import { fileURLToPath as fileURLToPath3 } from "url";
+import { fileURLToPath as fileURLToPath4 } from "url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 // src/setup/clients.ts
 import { spawnSync } from "child_process";
-import { copyFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "fs";
+import { copyFileSync, existsSync as existsSync3, mkdirSync, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
 import { homedir } from "os";
-import { delimiter, dirname, join as join3 } from "path";
+import { delimiter, dirname, join as join5 } from "path";
 var SERVER_NAME = "agentcursor";
 function launchEntry(self) {
-  if (self.includes(join3("_npx", ""))) {
-    return { command: join3(dirname(process.execPath), "npx"), args: ["-y", "agentcursor"] };
+  if (self.includes(join5("_npx", ""))) {
+    return { command: join5(dirname(process.execPath), "npx"), args: ["-y", "agentcursor"] };
   }
   return { command: process.execPath, args: [self] };
 }
 var toolPath = () => [
   process.env.PATH,
   dirname(process.execPath),
-  join3(homedir(), ".local", "bin"),
+  join5(homedir(), ".local", "bin"),
   "/opt/homebrew/bin",
   "/usr/local/bin"
 ].filter(Boolean).join(delimiter);
@@ -1785,35 +2453,35 @@ function readJson(path) {
     return null;
   }
 }
-function writeJsonEntry(path, key, value) {
+function writeJsonEntry(path, key2, value) {
   let config = {};
-  if (existsSync2(path)) {
+  if (existsSync3(path)) {
     const raw = readFileSync2(path, "utf8");
     try {
       config = raw.trim() ? JSON.parse(raw) : {};
     } catch {
       throw new Error(
         `${path} is not plain JSON (it may contain comments). Add this by hand:
-${JSON.stringify({ [key]: { [SERVER_NAME]: value } }, null, 2)}`
+${JSON.stringify({ [key2]: { [SERVER_NAME]: value } }, null, 2)}`
       );
     }
     copyFileSync(path, `${path}.bak`);
   } else {
     mkdirSync(dirname(path), { recursive: true });
   }
-  config[key] = { ...config[key] ?? {}, [SERVER_NAME]: value };
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}
+  config[key2] = { ...config[key2] ?? {}, [SERVER_NAME]: value };
+  writeFileSync2(path, `${JSON.stringify(config, null, 2)}
 `);
   return `added to ${path} (backup at .bak); restart the app to load it`;
 }
-function jsonClient(id, name, dir, file, key, shape = (e) => e) {
-  const path = join3(dir, file);
+function jsonClient(id, name, dir, file, key2, shape = (e) => e) {
+  const path = join5(dir, file);
   return {
     id,
     name,
-    detect: () => existsSync2(dir),
-    configured: () => Boolean(readJson(path)?.[key]?.[SERVER_NAME]),
-    connect: (entry) => writeJsonEntry(path, key, shape(entry))
+    detect: () => existsSync3(dir),
+    configured: () => Boolean(readJson(path)?.[key2]?.[SERVER_NAME]),
+    connect: (entry) => writeJsonEntry(path, key2, shape(entry))
   };
 }
 function cliClient(id, name, bin, addArgs, configured) {
@@ -1831,9 +2499,9 @@ function cliClient(id, name, bin, addArgs, configured) {
   };
 }
 function appDataDir(home, ...parts) {
-  if (process.platform === "darwin") return join3(home, "Library", "Application Support", ...parts);
-  if (process.platform === "win32") return join3(process.env.APPDATA ?? join3(home, "AppData", "Roaming"), ...parts);
-  return join3(home, ".config", ...parts);
+  if (process.platform === "darwin") return join5(home, "Library", "Application Support", ...parts);
+  if (process.platform === "win32") return join5(process.env.APPDATA ?? join5(home, "AppData", "Roaming"), ...parts);
+  return join5(home, ".config", ...parts);
 }
 function clients(home = homedir()) {
   return [
@@ -1842,9 +2510,9 @@ function clients(home = homedir()) {
       "Claude Code",
       "claude",
       (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, "--", e.command, ...e.args],
-      () => Boolean(readJson(join3(home, ".claude.json"))?.mcpServers?.[SERVER_NAME])
+      () => Boolean(readJson(join5(home, ".claude.json"))?.mcpServers?.[SERVER_NAME])
     ),
-    jsonClient("cursor", "Cursor", join3(home, ".cursor"), "mcp.json", "mcpServers"),
+    jsonClient("cursor", "Cursor", join5(home, ".cursor"), "mcp.json", "mcpServers"),
     jsonClient("vscode", "VS Code", appDataDir(home, "Code", "User"), "mcp.json", "servers", (e) => ({ type: "stdio", ...e })),
     cliClient(
       "codex",
@@ -1853,27 +2521,27 @@ function clients(home = homedir()) {
       (e) => ["mcp", "add", SERVER_NAME, "--", e.command, ...e.args],
       () => {
         try {
-          return /^\[mcp_servers\.agentcursor\]/m.test(readFileSync2(join3(home, ".codex", "config.toml"), "utf8"));
+          return /^\[mcp_servers\.agentcursor\]/m.test(readFileSync2(join5(home, ".codex", "config.toml"), "utf8"));
         } catch {
           return false;
         }
       }
     ),
-    jsonClient("windsurf", "Windsurf", join3(home, ".codeium", "windsurf"), "mcp_config.json", "mcpServers"),
+    jsonClient("windsurf", "Windsurf", join5(home, ".codeium", "windsurf"), "mcp_config.json", "mcpServers"),
     jsonClient("claude-desktop", "Claude Desktop", appDataDir(home, "Claude"), "claude_desktop_config.json", "mcpServers"),
     cliClient(
       "gemini",
       "Gemini CLI",
       "gemini",
       (e) => ["mcp", "add", "--scope", "user", SERVER_NAME, e.command, ...e.args],
-      () => Boolean(readJson(join3(home, ".gemini", "settings.json"))?.mcpServers?.[SERVER_NAME])
+      () => Boolean(readJson(join5(home, ".gemini", "settings.json"))?.mcpServers?.[SERVER_NAME])
     )
   ];
 }
 function clientStatus(home = homedir()) {
   return clients(home).map((c) => ({ id: c.id, name: c.name, detected: c.detect(), configured: c.configured() }));
 }
-function connectClient(id, entry, home = homedir()) {
+function connectClient2(id, entry, home = homedir()) {
   const client = clients(home).find((c) => c.id === id);
   if (!client) throw new Error(`Unknown client "${id}"`);
   return client.connect(entry);
@@ -1906,13 +2574,13 @@ function serve(rt, opts = {}) {
           res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
           return res.end(wizard_default);
         }
-        if (path === "/health") return json(res, 200, health());
+        if (path === "/health") return json(res, 200, health2());
         if (path === "/api/status") return json(res, 200, await status(rt));
       }
       if (req.method === "POST") {
         const body = await readBody(req);
         if (path === "/api/connect") {
-          return json(res, 200, { message: connectClient(String(body.client), launchEntry(SELF)) });
+          return json(res, 200, { message: connectClient2(String(body.client), launchEntry(SELF)) });
         }
         if (path === "/api/permission") {
           return json(res, 200, await rt.desktop.requestPermission(body.kind === "screen" ? "screen" : "accessibility"));
@@ -1962,14 +2630,14 @@ async function handleMcp(rt, req, res) {
   await server.connect(transport);
   await transport.handleRequest(req, res);
 }
-function health() {
+function health2() {
   return { ok: true, version: readVersion(), buildId: BUILD_ID, pid: process.pid };
 }
 async function status(rt) {
   const supported = desktopSupported();
   const permissions = supported ? await rt.desktop.permissions().catch(() => null) : null;
   return {
-    ...health(),
+    ...health2(),
     platform: process.platform,
     mcpUrl: `http://127.0.0.1:${rt.ports.http}/mcp`,
     stdio: launchEntry(SELF),
@@ -1978,7 +2646,7 @@ async function status(rt) {
     extension: {
       connected: rt.extension.connected,
       wsPort: rt.ports.ws,
-      path: fileURLToPath3(new URL("../extension", import.meta.url))
+      path: fileURLToPath4(new URL("../extension", import.meta.url))
     },
     desktop: {
       supported,
@@ -2010,89 +2678,8 @@ function readBody(req) {
   });
 }
 
-// src/server/proxy.ts
-import { spawn } from "child_process";
-import { openSync } from "fs";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  GetPromptRequestSchema,
-  ListPromptsRequestSchema,
-  ListToolsRequestSchema
-} from "@modelcontextprotocol/sdk/types.js";
-var base = (port) => `http://127.0.0.1:${port}`;
-async function health2(port) {
-  try {
-    const res = await fetch(`${base(port)}/health`, { signal: AbortSignal.timeout(1500) });
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
-}
-async function until(check, timeoutMs) {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    if (await check()) return true;
-    await sleep(150);
-  }
-  return false;
-}
-async function ensureDaemon(port) {
-  const current = await health2(port);
-  if (current && current.buildId >= BUILD_ID) return;
-  if (current) {
-    await fetch(`${base(port)}/shutdown`, { method: "POST" }).catch(() => void 0);
-    await until(async () => !await health2(port), 5e3);
-  }
-  const log = openSync(logFile(port), "a");
-  spawn(process.execPath, [SELF, "serve", "--idle-exit"], {
-    detached: true,
-    stdio: ["ignore", log, log],
-    env: process.env
-  }).unref();
-  const ready = await until(async () => ((await health2(port))?.buildId ?? 0) >= BUILD_ID, 15e3);
-  if (!ready) throw new Error(`agentcursor could not start its local service on port ${port}. Log: ${logFile(port)}`);
-}
-async function connect(port) {
-  const client = new Client({ name: "agentcursor-stdio", version: readVersion() });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${base(port)}/mcp`)));
-  return client;
-}
-var unreachable = (e) => {
-  const err = e;
-  return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up/i.test(`${err?.message} ${err?.cause?.code}`);
-};
-async function runStdioProxy(port) {
-  await ensureDaemon(port);
-  let client = await connect(port);
-  const call = async (fn) => {
-    try {
-      return await fn(client);
-    } catch (e) {
-      if (!unreachable(e)) throw e;
-      await ensureDaemon(port);
-      client = await connect(port);
-      return fn(client);
-    }
-  };
-  const server = new Server(
-    { name: "agentcursor", version: readVersion() },
-    { capabilities: { tools: {}, prompts: {} }, instructions: client.getInstructions() }
-  );
-  const long = { timeout: 15 * 6e4 };
-  server.setRequestHandler(ListToolsRequestSchema, (req) => call((c) => c.listTools(req.params)));
-  server.setRequestHandler(CallToolRequestSchema, (req) => call((c) => c.callTool(req.params, void 0, long)));
-  server.setRequestHandler(ListPromptsRequestSchema, (req) => call((c) => c.listPrompts(req.params)));
-  server.setRequestHandler(GetPromptRequestSchema, (req) => call((c) => c.getPrompt(req.params)));
-  await server.connect(new StdioServerTransport());
-  setInterval(() => void health2(port), 6e4).unref();
-}
-
 // src/setup/cli.ts
-import { spawn as spawn2 } from "child_process";
+import { spawn as spawn4 } from "child_process";
 async function setup(port, argv) {
   await ensureDaemon(port);
   const all = argv.includes("--all");
@@ -2119,7 +2706,7 @@ Setup page: ${url}`);
 }
 function openUrl(url) {
   const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-  spawn2(cmd, args, { stdio: "ignore", detached: true }).unref();
+  spawn4(cmd, args, { stdio: "ignore", detached: true }).unref();
 }
 
 // src/index.ts
@@ -2130,11 +2717,10 @@ if (command === "serve") {
 } else if (command === "setup") {
   await setup(ports.http, rest);
   process.exit(0);
+} else if (command === "launch") {
+  await launchCli(ports, rest);
 } else if (command === "mcp") {
   await runStdioProxy(ports.http);
 } else {
-  process.stderr.write(
-    "usage: agentcursor [mcp|serve|setup]\n  mcp    stdio MCP server for AI apps (default)\n  serve  run the local service in the foreground\n  setup  connect your AI apps and open the setup page (--all, --client=cursor,codex, --no-open)\n"
-  );
-  process.exit(1);
+  process.exit(await runTool(ports.http, [command, ...rest]));
 }

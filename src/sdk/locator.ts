@@ -109,16 +109,16 @@ export class Locator {
     const m = await this.resolve(false);
     return m.count > 0 ? m.rect : null;
   }
-  async textContent(): Promise<string | null> {
-    const m = await this.resolve(false);
+  async textContent(opts: { timeout?: number } = {}): Promise<string | null> {
+    const m = await this.resolve(false, opts.timeout);
     return m.count > 0 ? m.text : null;
   }
   async isVisible(): Promise<boolean> {
-    const m = await this.resolve(false);
+    const m = await this.resolve(false, 0);
     return m.count > 0 && m.visible;
   }
   async count(): Promise<number> {
-    const m = await this.resolve(false);
+    const m = await this.resolve(false, 0);
     return m.count;
   }
   async waitFor(opts: { state?: "visible" | "attached"; timeout?: number } = {}): Promise<Locator> {
@@ -128,10 +128,14 @@ export class Locator {
       const m = await this.resolve(false, 0);
       if (m.count > 0 && (state === "attached" || m.visible)) return this;
       if (Date.now() >= deadline) {
-        throw new Error(`agentcursor: waitFor(${state}) timed out for locator [${describe(this.spec)}]`);
+        throw new Error(`agentcursor: waitFor(${state}) timed out for locator [${this}]`);
       }
       await delay(150);
     }
+  }
+
+  toString(): string {
+    return describe(this.spec);
   }
 
   private step(s: LocatorStep): Locator {
@@ -143,7 +147,7 @@ export class Locator {
   private async require(): Promise<LocatorMatch> {
     const m = await this.resolve(true);
     if (m.count === 0) {
-      throw new Error(`agentcursor: no element matched locator [${describe(this.spec)}]`);
+      throw new Error(`agentcursor: no element matched locator [${this}]`);
     }
     return m;
   }
@@ -160,7 +164,9 @@ function describe(spec: LocatorSpec): string {
         ? `filter(hasText=${s.hasText})`
         : s.kind === "nth"
           ? `nth(${s.index})`
-          : `${s.kind}=${s.value}`,
+          : s.kind === "role" && s.name
+            ? `role=${s.value}[name=${s.name}]`
+            : `${s.kind}=${s.value}`,
     )
     .join(" >> ");
 }

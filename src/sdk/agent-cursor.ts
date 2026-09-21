@@ -5,6 +5,7 @@ import { OsCursorDriver } from "../drivers/os-cursor-driver";
 import { createPersona } from "../persona";
 import { DEFAULT_WS_PORT } from "../protocol";
 import { ExtensionTransport } from "../server/transport";
+import { type LaunchOptions, launchBrowser } from "./launch";
 import { Locator } from "./locator";
 import type { ByOptions, ByRoleOptions, LocatorContext } from "./locator";
 
@@ -23,15 +24,38 @@ export interface ConnectOptions {
 
 /**
  * Programmatic entry point. Playwright-shaped locator API where every action is
- * driven by the human-cursor engine. Lifecycles: connect() attaches to a running
- * Chrome with the extension loaded; os() drives the real OS cursor via nut-js.
+ * driven by the human-cursor engine. Lifecycles: launch() starts a private
+ * Chrome with its own cursor (e2e tests; run several side by side); connect()
+ * attaches to a running Chrome with the extension loaded; os() drives the real
+ * OS cursor via nut-js.
  */
 export class AgentCursor {
   private constructor(
     private readonly action: ActionService,
     private readonly transport: ExtensionTransport,
     private readonly opts: { stealth: boolean },
+    private readonly dispose?: () => Promise<void>,
   ) {}
+
+  static async launch(options: Omit<ConnectOptions, "port"> & LaunchOptions = {}): Promise<AgentCursor> {
+    const transport = new ExtensionTransport(0);
+    const port = await transport.listening();
+    let browser: Awaited<ReturnType<typeof launchBrowser>>;
+    try {
+      browser = await launchBrowser(port, options);
+    } catch (err) {
+      transport.close();
+      throw err;
+    }
+    try {
+      await waitForConnection(transport, port, options.timeoutMs ?? 15_000);
+    } catch (err) {
+      await browser.close();
+      throw err;
+    }
+    const action = new ActionService(new ExtensionDriver(transport), createPersona(options.seed));
+    return new AgentCursor(action, transport, { stealth: options.stealth ?? false }, browser.close);
+  }
 
   static connect(options: ConnectOptions = {}): Promise<AgentCursor> {
     return AgentCursor.start(options, (t) => new ExtensionDriver(t));
@@ -86,6 +110,9 @@ export class AgentCursor {
   url(): Promise<string> {
     return this.action.getUrl();
   }
+  evaluate<T = unknown>(fn: string | ((...a: any[]) => any), ...args: unknown[]): Promise<T> {
+    return this.action.evaluate(typeof fn === "string" ? fn : fn.toString(), args) as Promise<T>;
+  }
   async scroll(opts: { dy: number; dx?: number; stealth?: boolean }): Promise<AgentCursor> {
     await this.action.scroll({ dy: opts.dy, dx: opts.dx, stealth: opts.stealth ?? this.opts.stealth });
     return this;
@@ -103,6 +130,7 @@ export class AgentCursor {
   }
   async close(): Promise<void> {
     this.transport.close();
+    await this.dispose?.();
   }
 
   private ctx(): LocatorContext {

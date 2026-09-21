@@ -132,7 +132,18 @@ export type Command =
     }
   | { kind: "waitFor"; ref?: string; text?: string; timeoutMs: number; condition?: "exists" | "visible" | "text" }
   | { kind: "pressKey"; key: string; mode: DeliveryMode }
-  | { kind: "resolveLocator"; spec: LocatorSpec; timeoutMs: number; scrollIntoView?: boolean };
+  | { kind: "resolveLocator"; spec: LocatorSpec; timeoutMs: number; scrollIntoView?: boolean }
+  | { kind: "evaluate"; expression: string };
+
+/**
+ * Wrap a page function and its args into a self-calling expression for
+ * CDP Runtime.evaluate, e.g. `(() => document.title)()` or
+ * `(async (u) => (await fetch(u, { credentials: "include" })).status)("/x")`.
+ */
+export function buildEvalExpression(fn: string, args: unknown[] = []): string {
+  const argList = args.map((a) => JSON.stringify(a) ?? "undefined").join(",");
+  return `(${fn.trim()})(${argList})`;
+}
 
 export interface CommandEnvelope {
   v: number;

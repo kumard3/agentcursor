@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { formatElement, formatView, type DesktopService } from "../desktop/service";
+import { readOrDiff } from "../util/diff";
 
 function text(body: string) {
   return { content: [{ type: "text" as const, text: body }] };
@@ -13,6 +14,8 @@ const target = {
   y: z.number().optional(),
   app: z.string().optional(),
 };
+
+const lastRead = new WeakMap<DesktopService, string[]>();
 
 export function registerDesktopTools(server: McpServer, desktop: DesktopService): void {
   server.registerTool(
@@ -42,14 +45,18 @@ export function registerDesktopTools(server: McpServer, desktop: DesktopService)
         app: z.string().optional(),
         find: z.string().optional(),
         max: z.number().int().min(1).max(500).optional(),
+        changes: z.boolean().optional().describe("only what changed since your last read (refs stay valid)"),
       },
     },
-    async ({ app, find, max }) => {
+    async ({ app, find, max, changes }) => {
       if (find) {
         const matches = await desktop.find(find, { app });
         return text(matches.length ? matches.map(formatElement).join("\n") : `Nothing matching "${find}".`);
       }
-      return text(formatView(await desktop.read({ app, max })));
+      const lines = formatView(await desktop.read({ app, max })).split("\n");
+      const body = changes ? readOrDiff(lastRead.get(desktop), lines) : lines.join("\n");
+      lastRead.set(desktop, lines);
+      return text(body);
     },
   );
 

@@ -63,6 +63,24 @@ var DebuggerDriver = class {
       await this.detach(tabId);
     }
   }
+  async evaluate(tabId, expression) {
+    await this.attach(tabId);
+    try {
+      const res = await this.send(tabId, "Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+        userGesture: true
+      });
+      if (res.exceptionDetails) {
+        const ex = res.exceptionDetails;
+        throw new Error(ex.exception?.description ?? ex.text ?? "evaluate failed");
+      }
+      return res.result?.value ?? null;
+    } finally {
+      await this.detach(tabId);
+    }
+  }
   async attach(tabId) {
     if (this.attached.has(tabId)) return;
     await chrome.debugger.attach({ tabId }, "1.3");
@@ -179,11 +197,12 @@ var DebuggerDriver = class {
 };
 
 // extension/src/service-worker.ts
-var PORT = DEFAULT_WS_PORT;
 var debuggerDriver = new DebuggerDriver();
 var socket = null;
 var reconnectTimer = null;
-function connect() {
+var port = fetch(chrome.runtime.getURL("launch.json")).then((r) => r.json()).then((c) => c.port).catch(() => DEFAULT_WS_PORT);
+async function connect() {
+  const PORT = await port;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -208,7 +227,7 @@ function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    connect();
+    void connect();
   }, 1500);
 }
 async function onCommand(raw) {
@@ -253,7 +272,7 @@ async function activeTabId() {
 async function route(cmd) {
   const tabId = await activeTabId();
   if (cmd.kind === "navigate") {
-    await chrome.tabs.update(tabId, { url: cmd.url });
+    await navigateAndWait(tabId, cmd.url);
     return null;
   }
   if (cmd.kind === "getUrl") {
@@ -262,6 +281,10 @@ async function route(cmd) {
   }
   if (cmd.kind === "screenshot") {
     const format = cmd.format ?? "png";
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    }).catch(() => void 0);
     const dataUrl = await chrome.tabs.captureVisibleTab({ format });
     try {
       const geom = await sendToContent(tabId, { kind: "windowGeometry" });
@@ -272,6 +295,9 @@ async function route(cmd) {
   }
   if (cmd.kind === "hover" || cmd.kind === "ensureVisible") {
     return sendToContent(tabId, cmd);
+  }
+  if (cmd.kind === "evaluate") {
+    return debuggerDriver.evaluate(tabId, cmd.expression);
   }
   if (isDrive(cmd) && cmd.mode === "debugger") {
     return debuggerDriver.handle(tabId, cmd);
@@ -298,15 +324,41 @@ async function scaleToViewport(dataUrl, w, h, format) {
   }
   return `data:${mime};base64,${btoa(bin)}`;
 }
+function navigateAndWait(tabId, url) {
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+    const onUpdated = (id, info) => {
+      if (id === tabId && info.status === "complete") done();
+    };
+    const timer = setTimeout(done, 15e3);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.update(tabId, { url }).catch((err) => {
+      done();
+      reject(err);
+    });
+  });
+}
 async function sendToContent(tabId, cmd) {
   const env = { v: PROTOCOL_VERSION, id: "", command: cmd };
   let res;
-  try {
-    res = await chrome.tabs.sendMessage(tabId, env);
-  } catch {
-    throw new Error(
-      "AgentCursor content script is not present on this tab (chrome:// and Web Store pages are not supported)."
-    );
+  const deadline = Date.now() + 5e3;
+  for (; ; ) {
+    try {
+      res = await chrome.tabs.sendMessage(tabId, env);
+      break;
+    } catch (err) {
+      const absent = /Receiving end does not exist/.test(String(err));
+      if (!absent || Date.now() >= deadline) {
+        throw new Error(
+          "AgentCursor content script is not present on this tab (chrome:// and Web Store pages are not supported)."
+        );
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
   if (!res) throw new Error("No response from page");
   if (!res.ok) throw new Error(res.error ?? "content script error");
@@ -314,6 +366,6 @@ async function sendToContent(tabId, cmd) {
 }
 chrome.alarms.create("agentcursor-keepalive", { periodInMinutes: 0.4 });
 chrome.alarms.onAlarm.addListener(() => {
-  if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+  if (!socket || socket.readyState === WebSocket.CLOSED) void connect();
 });
-connect();
+void connect();

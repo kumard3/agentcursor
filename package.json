@@ -34,6 +34,7 @@
     "test:watch": "vitest",
     "smoke": "tsup && node scripts/smoke.mjs",
     "smoke:sdk": "tsup && node scripts/sdk-smoke.mjs",
+    "e2e": "pnpm build && node --test test/e2e/*.e2e.mjs",
     "verify": "node scripts/verify-live.mjs",
     "demo": "node scripts/demo-drive.mjs",
     "dev": "tsx src/index.ts",

@@ -7,6 +7,7 @@ import type {
   Point,
   Rect,
 } from "../protocol";
+import { buildEvalExpression } from "../protocol";
 import type { BrowserDriver } from "../drivers/driver";
 import {
   generateMove,
@@ -153,6 +154,10 @@ export class ActionService {
 
   getUrl(): Promise<string> {
     return this.driver.getUrl();
+  }
+
+  evaluate(fn: string, args: unknown[] = []): Promise<unknown> {
+    return this.driver.evaluate(buildEvalExpression(fn, args));
   }
 
   async waitFor(opts: {

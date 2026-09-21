@@ -61,6 +61,28 @@ export class DebuggerDriver {
     }
   }
 
+  async evaluate(tabId: number, expression: string): Promise<unknown> {
+    await this.attach(tabId);
+    try {
+      const res = (await this.send(tabId, "Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+        userGesture: true,
+      })) as {
+        result?: { value?: unknown; description?: string };
+        exceptionDetails?: { exception?: { description?: string }; text?: string };
+      };
+      if (res.exceptionDetails) {
+        const ex = res.exceptionDetails;
+        throw new Error(ex.exception?.description ?? ex.text ?? "evaluate failed");
+      }
+      return res.result?.value ?? null;
+    } finally {
+      await this.detach(tabId);
+    }
+  }
+
   private async attach(tabId: number): Promise<void> {
     if (this.attached.has(tabId)) return;
     await chrome.debugger.attach({ tabId }, "1.3");
