@@ -247,6 +247,30 @@ if (await d.waitForText("Saved")) console.log("done");
 
 `find()` returns only matching elements (tens of tokens), `view()` gives the structured elements, and `screenshot({ path })` is the fallback when the text is not enough. macOS only, and it needs Accessibility permission for whichever app starts it.
 
+**Driving a browser with computer use instead of the DOM.** A page can also be read and clicked as an app, with no extension and no DOM: the clicks are real OS clicks, so the page sees `isTrusted=true`. Chrome only builds its accessibility tree for a screen reader, so ask for it at launch:
+
+```ts
+const ac = await AgentCursor.launch({ accessibility: true });   // --force-renderer-accessibility
+await ac.goto("http://localhost:3000");
+
+const d = await Desktop.open();
+console.log(await d.find("Menu"));     // [d23] button "Menu" @87,481
+await d.click("Menu");                  // real cursor, trusted click
+```
+
+Without that option a desktop read of Chrome sees the toolbar and no page content (16 elements against 61 on the same window, measured). For your own Chrome, start it with `--force-renderer-accessibility`.
+
+Which path to pick:
+
+| | Extension (DOM) | Computer use (accessibility tree) |
+| --- | --- | --- |
+| Events | synthetic, or trusted with `stealth: true` | always real OS input |
+| Reads | ~112 est tokens for a page | ~609 for the same window, browser chrome included |
+| Runs headless / in parallel | yes | no: needs a visible, frontmost window and the real mouse |
+| Works outside the browser | no | any Mac app, including Electron |
+
+`find` costs about 8 tokens on either path, and `--changes` works for desktop reads too.
+
 ## Attach any browser (real profile, in the background)
 
 AgentCursor drives any Chromium browser (Chrome, Chrome for Testing, Brave, Edge, BrowserOS, and mostly Arc) using **your real, logged-in profile**, in the **background** (it dispatches synthetic or CDP events, so the window need not be focused and your physical mouse is never touched). This is "computer use, but token-cheap and headless": `read_page` / `find` / `evaluate` cost tens to a few hundred tokens each versus a screenshot vision loop. `os()` is the only mode that runs in the foreground (it moves the real OS cursor).
