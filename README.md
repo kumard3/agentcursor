@@ -353,6 +353,7 @@ No extension needed. Grant Accessibility (and Screen Recording, only for screens
 | `desktop_apps` | Running apps, frontmost marked. |
 | `desktop_open` | Open or switch to an app by name and bring it to the front. |
 | `desktop_read` | The window as compact text: buttons, fields, links, menus, list items and visible text, each with a `[dN]` ref and center point. `find` returns only the best matches for a label. |
+| `desktop_wait_for` | Wait until a label or text shows up (a page or list still loading) and return it with its `[dN]` ref. |
 | `desktop_click` | Human path + click on a `[dN]` ref, a visible label (`text`), or `x/y`. Double and right click supported. |
 | `desktop_move` | Move there without clicking (hover menus, tooltips). |
 | `desktop_type` | Persona-timed typing into the focused field, or click a field first (`ref`, `into` label, `x/y`). `clear` replaces, `submit` presses Enter. |

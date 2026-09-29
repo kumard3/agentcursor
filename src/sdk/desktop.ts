@@ -105,11 +105,6 @@ export class Desktop {
 
   /** Waits for text to appear in the window. Returns false on timeout. */
   async waitForText(text: string, opts: { app?: string; timeout?: number } = {}): Promise<boolean> {
-    const deadline = Date.now() + (opts.timeout ?? 10_000);
-    for (;;) {
-      if ((await this.service.find(text, { app: opts.app, maxResults: 1 })).length > 0) return true;
-      if (Date.now() >= deadline) return false;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+    return (await this.service.waitFor(text, { app: opts.app, timeoutMs: opts.timeout })) !== undefined;
   }
 }
