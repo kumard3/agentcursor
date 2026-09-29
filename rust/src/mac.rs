@@ -517,7 +517,21 @@ pub fn snapshot(app: &App, max: usize) -> Result<Snapshot, String> {
 
 /// AXPress on the element or the nearest ancestor that takes it (a label inside a list row).
 pub fn press(h: &Ax) -> bool {
-    let mut cur = Some(h.clone());
+    // Text inside a link or button: press the control. Chrome accepts a press on the text
+    // but may not follow the link (Wikipedia's search suggestions filled the box, no navigation).
+    let mut start = h.clone();
+    if actionable(&h.str("AXRole")).is_none() {
+        let mut up = h.el("AXParent");
+        for _ in 0..3 {
+            let Some(p) = up else { break };
+            if actionable(&p.str("AXRole")).is_some() {
+                start = p;
+                break;
+            }
+            up = p.el("AXParent");
+        }
+    }
+    let mut cur = Some(start);
     for _ in 0..4 {
         let Some(el) = cur else { break };
         if el.actions().iter().any(|a| a == "AXPress") && el.perform("AXPress") == 0 {

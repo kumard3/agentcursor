@@ -75,7 +75,9 @@ pub fn rank_by_text<'a>(elements: &'a [Element], query: &str) -> Vec<&'a Element
             } else {
                 return None;
             };
-            Some((score, e))
+            // On a tie, the control beats the label inside it.
+            let control = !matches!(e.role.as_str(), "text" | "heading" | "image");
+            Some((score * 2 + control as u8, e))
         })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -265,6 +267,8 @@ mod tests {
         assert_eq!(r[0].name, "Save");
         assert_eq!(r[1].name, "Save draft now");
         assert_eq!(r.len(), 3);
+        let tie = vec![el("text", "Alan Turing", 0.0, 0.0), el("link", "Alan Turing", 0.0, 0.0)];
+        assert_eq!(rank_by_text(&tie, "alan turing")[0].role, "link");
     }
 
     #[test]
