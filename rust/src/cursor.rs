@@ -17,6 +17,12 @@ fn enabled() -> bool {
     std::env::var("AGENTCURSOR_CURSOR").map_or(true, |v| v != "0")
 }
 
+/// What the cursor process is told: move there, or sit just above this window.
+pub enum Msg {
+    Move(f64, f64),
+    Attach(i64),
+}
+
 pub struct Cursor {
     stream: Option<UnixStream>,
     pub pos: (f64, f64),
@@ -65,6 +71,13 @@ impl Cursor {
         c
     }
 
+    /// Keep the cursor just above the window it works in, so it hides behind the user's windows.
+    pub fn attach(&mut self, window: Option<u32>) {
+        if let (Some(id), Some(s)) = (window, self.stream.as_mut()) {
+            let _ = writeln!(s, "w {id}");
+        }
+    }
+
     /// Glides to `to` along a human path at human speed; returns once it arrives.
     pub fn glide(&mut self, to: (f64, f64), target_width: f64) {
         let Some(stream) = self.stream.as_mut() else {
@@ -103,7 +116,7 @@ pub fn daemon() {
         .collect();
     let pos = Arc::new(Mutex::new(if start.len() == 2 { (start[0], start[1]) } else { (400.0, 300.0) }));
     let seed = Rng::fresh().next().to_bits() as u32;
-    let (tx, rx) = mpsc::channel::<(f64, f64)>();
+    let (tx, rx) = mpsc::channel::<Msg>();
     let shared = pos.clone();
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
@@ -113,10 +126,14 @@ pub fn daemon() {
                 let mut w = &conn;
                 let _ = writeln!(w, "{x} {y} {seed}");
                 for line in BufReader::new(&conn).lines().map_while(Result::ok) {
+                    if let Some(id) = line.strip_prefix("w ").and_then(|v| v.trim().parse().ok()) {
+                        let _ = tx.send(Msg::Attach(id));
+                        continue;
+                    }
                     let v: Vec<f64> = line.split_whitespace().filter_map(|p| p.parse().ok()).collect();
                     if v.len() == 2 {
                         *pos.lock().unwrap() = (v[0], v[1]);
-                        let _ = tx.send((v[0], v[1]));
+                        let _ = tx.send(Msg::Move(v[0], v[1]));
                     }
                 }
             });

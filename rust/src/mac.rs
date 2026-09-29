@@ -676,6 +676,10 @@ pub fn post_combo(pid: i32, combo: &str) -> Result<(), String> {
 // ---------------------------------------------------------------- screenshots
 
 /// JPEG of the window (or a region of the screen), downscaled; works while the window is covered.
+pub fn window_id(snap: &Snapshot) -> Option<u32> {
+    snap.window.ax.window_id()
+}
+
 pub fn screenshot(snap: &Snapshot, region: Option<Rect>, max_width: u32) -> Result<(Vec<u8>, String), String> {
     let file = crate::view::state_dir().join(format!("shot-{}.jpg", std::process::id()));
     let mut cmd = Command::new("screencapture");
@@ -720,9 +724,10 @@ pub fn screenshot(snap: &Snapshot, region: Option<Rect>, max_width: u32) -> Resu
 mod overlay {
     use objc2::rc::Retained;
     use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
+    use crate::cursor::Msg;
     use objc2_app_kit::{
         NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSColor, NSEventMask, NSResponder,
-        NSScreen, NSScreenSaverWindowLevel, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+        NSScreen, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowOrderingMode, NSWindowStyleMask,
     };
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSObject, NSPoint, NSRect, NSSize};
     use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -767,7 +772,7 @@ mod overlay {
     }
 
     /// Runs on the main thread until no position arrives for `idle`.
-    pub fn run(rx: Receiver<(f64, f64)>, color: Option<&str>, idle: Duration) {
+    pub fn run(rx: Receiver<Msg>, color: Option<&str>, idle: Duration) {
         if let Some(c) = color.and_then(parse_hex) {
             let _ = COLOR.set(c);
         }
@@ -790,7 +795,8 @@ mod overlay {
         win.setBackgroundColor(Some(&NSColor::clearColor()));
         win.setHasShadow(false);
         win.setIgnoresMouseEvents(true);
-        win.setLevel(NSScreenSaverWindowLevel);
+        // Normal level, ordered just above the window being worked in: the cursor shows on
+        // that window and hides wherever the user's own windows cover it.
         win.setCollectionBehavior(
             NSWindowCollectionBehavior::CanJoinAllSpaces
                 | NSWindowCollectionBehavior::Stationary
@@ -801,6 +807,7 @@ mod overlay {
         // Accessibility coordinates start top-left of the primary screen; AppKit's start bottom-left.
         let primary_h = NSScreen::screens(mtm).firstObject().map(|s| s.frame().size.height).unwrap_or(1080.0);
         let mut shown = false;
+        let mut target: Option<i64> = None;
         let mut last = Instant::now();
         loop {
             while let Some(ev) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
@@ -812,21 +819,28 @@ mod overlay {
                 app.sendEvent(&ev);
             }
             let mut at = None;
+            let mut msgs = Vec::new();
             match rx.recv_timeout(Duration::from_millis(8)) {
-                Ok(p) => at = Some(p),
+                Ok(m) => msgs.push(m),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            while let Ok(p) = rx.try_recv() {
-                at = Some(p);
+            msgs.extend(rx.try_iter());
+            for m in msgs {
+                match m {
+                    Msg::Move(x, y) => at = Some((x, y)),
+                    Msg::Attach(id) => target = Some(id),
+                }
             }
             if let Some((x, y)) = at {
                 last = Instant::now();
                 win.setFrameOrigin(NSPoint::new(x - 2.0, primary_h - y - H + 2.0));
-                if !shown {
-                    win.orderFrontRegardless();
-                    shown = true;
+                match target {
+                    Some(id) => win.orderWindow_relativeTo(NSWindowOrderingMode::Above, id as isize),
+                    None if !shown => win.orderFrontRegardless(),
+                    None => {}
                 }
+                shown = true;
             } else if last.elapsed() > idle {
                 return;
             }

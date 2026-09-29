@@ -151,6 +151,10 @@ impl Target {
         Some(&self.snap.as_ref()?.handles[self.index?])
     }
 
+    fn window(&self) -> Option<u32> {
+        os::window_id(self.snap.as_ref()?)
+    }
+
     fn element(&self) -> Option<&Element> {
         Some(&self.snap.as_ref()?.elements[self.index?])
     }
@@ -251,6 +255,7 @@ pub fn call(name: &str, args: &Value) -> Result<Reply, String> {
         "click" => {
             let mut cur = Cursor::connect();
             let t = resolve(&args, s(&args, "text"), &cur)?;
+            cur.attach(t.window());
             cur.glide(t.point, t.width);
             let pid = t.app.pid;
             let (right, double) = (b(&args, "right"), b(&args, "double"));
@@ -269,6 +274,7 @@ pub fn call(name: &str, args: &Value) -> Result<Reply, String> {
             let mut cur = Cursor::connect();
             let target = if s(&args, "ref").is_some() || s(&args, "into").is_some() {
                 let t = resolve(&args, s(&args, "into"), &cur)?;
+                cur.attach(t.window());
                 cur.glide(t.point, t.width);
                 Some(t)
             } else {
@@ -322,12 +328,14 @@ pub fn call(name: &str, args: &Value) -> Result<Reply, String> {
                 let (snap, _) = read_app(&app, 1)?;
                 let w = &snap.window;
                 let mid = (w.x + w.w / 2.0, w.y + w.h / 2.0);
+                cur.attach(os::window_id(&snap));
                 cur.glide(mid, 200.0);
                 os::post_move(app.pid, mid.0, mid.1);
                 os::post_scroll(app.pid, n(&args, "dx").unwrap_or(0.0), dy.unwrap_or(0.0), 6);
                 return text(format!("scrolled dy={}{POSTED_NOTE}", dy.unwrap_or(0.0)));
             }
             let t = resolve(&args, s(&args, "text"), &cur)?;
+            cur.attach(t.window());
             cur.glide(t.point, t.width);
             match (dy, t.handle()) {
                 (None, Some(h)) => {
