@@ -150,7 +150,7 @@ final class Walker {
         var name = [text(a[2]), text(a[3]), text(a[5])].first { !$0.isEmpty } ?? ""
         if kind == nil, !insideControl {
             if role == "AXStaticText" || role == "AXHeading" {
-                let v = text(a[4])
+                let v = role == "AXHeading" ? "" : text(a[4]) // a heading's value is its level
                 if !v.isEmpty || !name.isEmpty { kind = role == "AXHeading" ? "heading" : "text"; name = v.isEmpty ? name : v }
             } else if role == "AXImage", !text(a[2]).isEmpty {
                 kind = "image"
