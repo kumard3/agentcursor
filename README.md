@@ -334,8 +334,9 @@ Flags: `--user-data-dir DIR` (real profile, left intact; omit for a throwaway co
 | `press_key` | Press a single key (Enter, Escape, Tab, arrows, Home/End, PageUp/Down, Space, or a character) on the focused element. content or stealth. |
 | `scroll` | Eased, human-stepped scrolling. |
 | `screenshot` | Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate — see the page, then `click`/`move_to` by `x/y` (the vision loop). Also for visual assertions and agent grounding. |
-| `navigate` | Load a URL in the active tab. |
+| `navigate` | Load a URL in the driven tab (the active one unless `tabs` picked another). |
 | `get_url` | Current tab URL. |
+| `tabs` | List tabs, or pick the one the browser tools drive without switching to it: `select` by id or URL/title text, `new` opens a URL in a background tab, `close`. A background tab supports reads, clicks and typing (the cursor animation is skipped there), not `screenshot`. |
 | `evaluate` | Run a JS function in the page (CDP `Runtime.evaluate`): page realm, uses the page's own cookies/session, awaits promises, ignores the page CSP. For reads and requests with no button (`() => document.title`, `async () => (await fetch('/api/x', { method: 'POST', credentials: 'include' })).status`). Returns the JSON result. Shows the debugger banner while it runs. |
 | `wait_for` | Wait for element ref or visible text (up to timeout). Use for resilient testing flows. |
 | `status` | Health / connection status, driver, active URL, port. Great for CI, long-running workflows, and monitoring. |

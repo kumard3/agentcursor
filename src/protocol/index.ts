@@ -133,7 +133,8 @@ export type Command =
   | { kind: "waitFor"; ref?: string; text?: string; timeoutMs: number; condition?: "exists" | "visible" | "text" }
   | { kind: "pressKey"; key: string; mode: DeliveryMode }
   | { kind: "resolveLocator"; spec: LocatorSpec; timeoutMs: number; scrollIntoView?: boolean }
-  | { kind: "evaluate"; expression: string };
+  | { kind: "evaluate"; expression: string }
+  | { kind: "tabs"; action: "list" | "select" | "new" | "close"; id?: number; url?: string };
 
 /**
  * Wrap a page function and its args into a self-calling expression for
@@ -149,6 +150,21 @@ export interface CommandEnvelope {
   v: number;
   id: string;
   command: Command;
+  /** The tab to drive; the active tab when absent. */
+  tab?: number;
+}
+
+export interface TabInfo {
+  id: number;
+  title: string;
+  url: string;
+  active: boolean;
+}
+
+/** `pin` is set when the call changes which tab is driven (null = back to the active tab). */
+export interface TabsResult {
+  tabs: TabInfo[];
+  pin?: number | null;
 }
 
 export type CommandResult =

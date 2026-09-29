@@ -12,7 +12,7 @@ import type {
 } from "../../src/protocol";
 import { CursorOverlay } from "./cursor-overlay";
 import { evaluateSpec } from "./locator-engine";
-import { rand, sleep, sleepUntil, smooth } from "./timing";
+import { rand, sleep, smooth } from "./timing";
 
 const overlay = new CursorOverlay();
 const refMap = new Map<string, Element>();
@@ -20,6 +20,9 @@ const refMap = new Map<string, Element>();
 // in an earlier read keep pointing at the same thing and reads can be diffed.
 const refOf = new WeakMap<Element, string>();
 let refCounter = 0;
+
+// Hidden tabs clamp timers (a click took 5.8s); nobody can see the cursor there, so skip the pacing.
+const pace = (ms: number): Promise<void> => (document.hidden ? Promise.resolve() : sleep(ms));
 
 function refFor(el: Element): string {
   let ref = refOf.get(el);
@@ -105,7 +108,7 @@ async function replayMove(samples: CursorSample[], heldButton?: number): Promise
   const start = performance.now();
   const heldMask = heldButton != null ? buttonsMask(heldButton) : 0;
   for (const s of samples) {
-    await sleepUntil(start + s.t);
+    await pace(start + s.t - performance.now());
     overlay.moveTo(s.x, s.y);
     const target = document.elementFromPoint(s.x, s.y) ?? document.documentElement;
     firePointer(target, "pointermove", s.x, s.y, 0, heldMask);
@@ -117,7 +120,7 @@ async function replayMove(samples: CursorSample[], heldButton?: number): Promise
 async function showCursorPath(samples: CursorSample[]): Promise<void> {
   const start = performance.now();
   for (const s of samples) {
-    await sleepUntil(start + s.t);
+    await pace(start + s.t - performance.now());
     overlay.moveTo(s.x, s.y);
   }
 }
@@ -131,11 +134,11 @@ async function replayClick(
   pressMs: number,
 ): Promise<void> {
   await replayMove(samples);
-  await sleep(preClickDwellMs);
+  await pace(preClickDwellMs);
   const el = document.elementFromPoint(target.x, target.y) ?? document.body;
   const b = buttonIndex(button);
   pressSequence(el, target, b, pressMs);
-  await sleep(pressMs);
+  await pace(pressMs);
   releaseSequence(el, target, b, 1);
   if (el instanceof HTMLElement) el.focus?.();
   if (dblclick) {
@@ -171,7 +174,7 @@ async function typeText(
     // Persona schedule: bursts, boundary pauses, and typo corrections (a wrong
     // char, then a real Backspace, then the right char) rendered live.
     for (const op of schedule) {
-      await sleep(Math.max(0, op.delayMs));
+      await pace(Math.max(0, op.delayMs));
       if (op.t === "key") {
         dispatchKey(el, "keydown", op.ch);
         insertChar(el, op.ch);
@@ -188,7 +191,7 @@ async function typeText(
     dispatchKey(el, "keydown", ch);
     insertChar(el, ch);
     dispatchKey(el, "keyup", ch);
-    await sleep(rand(perKeyMinMs, perKeyMaxMs));
+    await pace(rand(perKeyMinMs, perKeyMaxMs));
   }
 }
 
@@ -222,7 +225,7 @@ async function resolveLocator(
   }
   if (scroll && !isFullyInViewport(first) && typeof first.scrollIntoView === "function") {
     first.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
-    await sleep(60);
+    await pace(60);
   }
   const r = first.getBoundingClientRect();
   return {
@@ -246,7 +249,7 @@ async function scrollPage(dx: number, dy: number, steps: number): Promise<void> 
     el.dispatchEvent(
       new WheelEvent("wheel", { deltaX: sx, deltaY: sy, bubbles: true, cancelable: true, composed: true }),
     );
-    await sleep(rand(12, 28));
+    await pace(rand(12, 28));
   }
 }
 
@@ -339,7 +342,7 @@ async function ensureVisible(ref?: string, point?: Point): Promise<void> {
       inline: "center",
       behavior: "auto",
     });
-    await sleep(60);
+    await pace(60);
   }
 }
 

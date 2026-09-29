@@ -5,6 +5,8 @@ import {
   type CommandEnvelope,
   type CommandResult,
   type DeliveryMode,
+  type TabInfo,
+  type TabsResult,
 } from "../../src/protocol";
 import { DebuggerDriver } from "./debugger-driver";
 import { log } from "./timing";
@@ -67,7 +69,7 @@ async function onCommand(raw: string): Promise<void> {
   if (!env?.command) return;
   let result: CommandResult;
   try {
-    result = { id: env.id, ok: true, data: await route(env.command) };
+    result = { id: env.id, ok: true, data: await route(env.command, env.tab) };
   } catch (err) {
     result = {
       id: env.id,
@@ -100,8 +102,55 @@ async function activeTabId(): Promise<number> {
   throw new Error("No active tab found. Open a normal http(s) tab in Chrome.");
 }
 
-async function route(cmd: Command): Promise<unknown> {
-  const tabId = await activeTabId();
+async function pinnedTab(id: number): Promise<chrome.tabs.Tab> {
+  try {
+    return await chrome.tabs.get(id);
+  } catch {
+    throw new Error(`Tab ${id} is closed. Call tabs to pick another.`);
+  }
+}
+
+function tabInfo(t: chrome.tabs.Tab): TabInfo {
+  return { id: t.id!, title: t.title ?? "", url: t.url ?? "", active: t.active };
+}
+
+async function tabs(
+  cmd: Extract<Command, { kind: "tabs" }>,
+  pinned: number | undefined,
+): Promise<TabsResult> {
+  const list = async () => (await chrome.tabs.query({})).filter((t) => t.id != null).map(tabInfo);
+  if (cmd.action === "new") {
+    const tab = await chrome.tabs.create({ active: false });
+    if (cmd.url) await navigateAndWait(tab.id!, cmd.url);
+    return { tabs: await list(), pin: tab.id! };
+  }
+  if (cmd.action === "close") {
+    const id = cmd.id ?? pinned;
+    if (id == null) throw new Error("Nothing to close: pass id, or select a tab first.");
+    await chrome.tabs.remove(id);
+    return { tabs: await list(), ...(id === pinned ? { pin: null } : {}) };
+  }
+  const all = await list();
+  if (cmd.action === "list") return { tabs: all };
+  if (cmd.id == null && !cmd.url) return { tabs: all, pin: null };
+  const q = cmd.url?.toLowerCase() ?? "";
+  const hit =
+    cmd.id != null
+      ? all.find((t) => t.id === cmd.id)
+      : (all.find((t) => t.url.toLowerCase().includes(q)) ?? all.find((t) => t.title.toLowerCase().includes(q)));
+  if (!hit) throw new Error(`No tab matches ${cmd.id ?? `"${cmd.url}"`}.`);
+  return { tabs: all, pin: hit.id };
+}
+
+async function route(cmd: Command, pinned?: number): Promise<unknown> {
+  if (cmd.kind === "tabs") return tabs(cmd, pinned);
+  const tabId = pinned != null ? (await pinnedTab(pinned)).id! : await activeTabId();
+  if (cmd.kind === "screenshot" || cmd.kind === "windowGeometry") {
+    // Both only see the visible tab: a background pin would capture, or OS-click, the user's tab.
+    if (!(await chrome.tabs.get(tabId)).active) {
+      throw new Error(`Tab ${tabId} is in the background, so ${cmd.kind} cannot see it. read_page and find work there.`);
+    }
+  }
   if (cmd.kind === "navigate") {
     await navigateAndWait(tabId, cmd.url);
     return null;

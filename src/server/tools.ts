@@ -161,7 +161,7 @@ export function registerTools(server: McpServer, action: ActionService): void {
   server.registerTool(
     "navigate",
     {
-      description: "Navigate the active tab to a URL.",
+      description: "Navigate the driven tab (the active one unless `tabs` picked another) to a URL.",
       inputSchema: { url: z.string() },
     },
     async ({ url }) => {
@@ -171,8 +171,28 @@ export function registerTools(server: McpServer, action: ActionService): void {
   );
 
   server.registerTool(
+    "tabs",
+    {
+      description:
+        "List browser tabs, or pick the one every browser tool drives (default: the active tab). select pins a tab by id or by URL/title text without switching to it; select with neither goes back to the active tab. new opens a URL in a background tab and pins it. close closes a tab (default: the pinned one). A background tab supports read_page, find, click, type and navigate, not screenshot.",
+      inputSchema: {
+        action: z.enum(["list", "select", "new", "close"]).optional(),
+        id: z.number().int().optional(),
+        url: z.string().optional(),
+      },
+    },
+    async ({ action: op = "list", id, url }) => {
+      const { tabs, pinned } = await action.tabs({ action: op, id, url });
+      const lines = tabs.map(
+        (t) => `${t.id === pinned ? ">" : " "} ${t.id}${t.active ? " (active)" : ""} ${t.title} | ${t.url}`,
+      );
+      return text(`${pinned ? `driving tab ${pinned}` : "driving the active tab"}\n${lines.join("\n")}`);
+    },
+  );
+
+  server.registerTool(
     "get_url",
-    { description: "Return the active tab's current URL.", inputSchema: {} },
+    { description: "Return the driven tab's current URL.", inputSchema: {} },
     async () => text(await action.getUrl()),
   );
 

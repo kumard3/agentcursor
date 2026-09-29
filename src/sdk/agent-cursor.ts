@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { ActionService } from "../action/service";
 import { ExtensionDriver } from "../drivers/extension-driver";
 import { OsCursorDriver } from "../drivers/os-cursor-driver";
+import type { TabsOp } from "../drivers/driver";
 import { createPersona } from "../persona";
 import { DEFAULT_WS_PORT } from "../protocol";
 import { ExtensionTransport } from "../server/transport";
@@ -112,6 +113,10 @@ export class AgentCursor {
   }
   evaluate<T = unknown>(fn: string | ((...a: any[]) => any), ...args: unknown[]): Promise<T> {
     return this.action.evaluate(typeof fn === "string" ? fn : fn.toString(), args) as Promise<T>;
+  }
+  /** List tabs or pick the one this instance drives (default: the active tab); see the `tabs` tool. */
+  tabs(op: TabsOp = { action: "list" }) {
+    return this.action.tabs(op);
   }
   async scroll(opts: { dy: number; dx?: number; stealth?: boolean }): Promise<AgentCursor> {
     await this.action.scroll({ dy: opts.dy, dx: opts.dx, stealth: opts.stealth ?? this.opts.stealth });

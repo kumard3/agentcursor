@@ -8,6 +8,7 @@ import type {
   PageSnapshot,
   Point,
   Rect,
+  TabInfo,
 } from "../protocol";
 
 export interface ClickArgs {
@@ -36,6 +37,12 @@ export interface ScrollArgs {
   dy: number;
   steps: number;
   mode: DeliveryMode;
+}
+
+export interface TabsOp {
+  action: "list" | "select" | "new" | "close";
+  id?: number;
+  url?: string;
 }
 
 export interface WaitArgs {
@@ -67,4 +74,5 @@ export interface BrowserDriver {
   pressKey(key: string, mode: DeliveryMode): Promise<void>;
   resolveLocator(spec: LocatorSpec, opts: { timeoutMs: number; scrollIntoView?: boolean }): Promise<LocatorMatch>;
   evaluate(expression: string): Promise<unknown>;
+  tabs(op: TabsOp): Promise<{ tabs: TabInfo[]; pinned?: number }>;
 }

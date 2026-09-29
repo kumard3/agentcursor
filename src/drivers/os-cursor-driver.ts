@@ -17,6 +17,7 @@ import type {
   BrowserDriver,
   ClickArgs,
   ScrollArgs,
+  TabsOp,
   TypeArgs,
   WaitArgs,
 } from "./driver";
@@ -110,6 +111,10 @@ export class OsCursorDriver implements BrowserDriver {
 
   async evaluate(expression: string): Promise<unknown> {
     return this.transport.send({ kind: "evaluate", expression }, 60_000);
+  }
+
+  tabs(op: TabsOp) {
+    return this.transport.tabs(op);
   }
 
   async cursorState(): Promise<Point> {

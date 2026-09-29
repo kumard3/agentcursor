@@ -8,6 +8,8 @@ import {
   type Command,
   type CommandEnvelope,
   type CommandResult,
+  type TabInfo,
+  type TabsResult,
 } from "../protocol";
 
 interface Pending {
@@ -24,6 +26,7 @@ export class ExtensionTransport {
   private readonly wss: WebSocketServer;
   private socket: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
+  private tab: number | undefined;
 
   constructor(port = DEFAULT_WS_PORT) {
     this.wss = new WebSocketServer({ host: "127.0.0.1", port });
@@ -67,7 +70,7 @@ export class ExtensionTransport {
       return Promise.reject(new Error(NOT_CONNECTED));
     }
     const id = randomUUID();
-    const envelope: CommandEnvelope = { v: PROTOCOL_VERSION, id, command };
+    const envelope: CommandEnvelope = { v: PROTOCOL_VERSION, id, command, tab: this.tab };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -76,6 +79,12 @@ export class ExtensionTransport {
       this.pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify(envelope));
     });
+  }
+
+  async tabs(op: { action: "list" | "select" | "new" | "close"; id?: number; url?: string }): Promise<{ tabs: TabInfo[]; pinned?: number }> {
+    const res = (await this.send({ kind: "tabs", ...op })) as TabsResult;
+    if (res.pin !== undefined) this.tab = res.pin ?? undefined;
+    return { tabs: res.tabs, pinned: this.tab };
   }
 
   private onMessage(raw: string): void {
