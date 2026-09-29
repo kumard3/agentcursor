@@ -468,6 +468,9 @@ var ActionService = class {
   evaluate(fn, args = []) {
     return this.driver.evaluate(buildEvalExpression(fn, args));
   }
+  tabs(op) {
+    return this.driver.tabs(op);
+  }
   async waitFor(opts) {
     await this.idleDrift();
     return this.driver.waitFor({
@@ -697,6 +700,9 @@ var ExtensionDriver = class {
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
   }
+  tabs(op) {
+    return this.transport.tabs(op);
+  }
 };
 
 // src/drivers/coord-map.ts
@@ -914,6 +920,9 @@ var OsCursorDriver = class {
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, 6e4);
   }
+  tabs(op) {
+    return this.transport.tabs(op);
+  }
   async cursorState() {
     const nut = await loadNut();
     const pos = await nut.mouse.getPosition();
@@ -953,6 +962,7 @@ var ExtensionTransport = class {
   wss;
   socket = null;
   pending = /* @__PURE__ */ new Map();
+  tab;
   constructor(port = DEFAULT_WS_PORT) {
     this.wss = new WebSocketServer({ host: "127.0.0.1", port });
     this.wss.on("error", (err) => {
@@ -994,7 +1004,7 @@ var ExtensionTransport = class {
       return Promise.reject(new Error(NOT_CONNECTED));
     }
     const id = randomUUID();
-    const envelope = { v: PROTOCOL_VERSION, id, command };
+    const envelope = { v: PROTOCOL_VERSION, id, command, tab: this.tab };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -1003,6 +1013,11 @@ var ExtensionTransport = class {
       this.pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify(envelope));
     });
+  }
+  async tabs(op) {
+    const res = await this.send({ kind: "tabs", ...op });
+    if (res.pin !== void 0) this.tab = res.pin ?? void 0;
+    return { tabs: res.tabs, pinned: this.tab };
   }
   onMessage(raw) {
     let result;
@@ -1366,6 +1381,10 @@ var AgentCursor = class _AgentCursor {
   evaluate(fn, ...args) {
     return this.action.evaluate(typeof fn === "string" ? fn : fn.toString(), args);
   }
+  /** List tabs or pick the one this instance drives (default: the active tab); see the `tabs` tool. */
+  tabs(op = { action: "list" }) {
+    return this.action.tabs(op);
+  }
   async scroll(opts) {
     await this.action.scroll({ dy: opts.dy, dx: opts.dx, stealth: opts.stealth ?? this.opts.stealth });
     return this;
@@ -1683,6 +1702,14 @@ var DesktopService = class {
     const view = await this.read({ app: opts.app, max: 400 });
     return rankByText(view.elements, text).slice(0, opts.maxResults ?? 8);
   }
+  async waitFor(text, opts = {}) {
+    const deadline = Date.now() + (opts.timeoutMs ?? 1e4);
+    for (; ; ) {
+      const [hit] = await this.find(text, { app: opts.app, maxResults: 1 });
+      if (hit || Date.now() >= deadline) return hit;
+      await sleep(250);
+    }
+  }
   async click(t) {
     const target2 = await this.resolve(t);
     await this.front(target2.pid);
@@ -1959,12 +1986,7 @@ var Desktop = class _Desktop {
   }
   /** Waits for text to appear in the window. Returns false on timeout. */
   async waitForText(text, opts = {}) {
-    const deadline = Date.now() + (opts.timeout ?? 1e4);
-    for (; ; ) {
-      if ((await this.service.find(text, { app: opts.app, maxResults: 1 })).length > 0) return true;
-      if (Date.now() >= deadline) return false;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+    return await this.service.waitFor(text, { app: opts.app, timeoutMs: opts.timeout }) !== void 0;
   }
 };
 

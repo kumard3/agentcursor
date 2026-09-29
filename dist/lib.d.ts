@@ -175,7 +175,18 @@ type Command = {
 } | {
     kind: "evaluate";
     expression: string;
+} | {
+    kind: "tabs";
+    action: "list" | "select" | "new" | "close";
+    id?: number;
+    url?: string;
 };
+interface TabInfo {
+    id: number;
+    title: string;
+    url: string;
+    active: boolean;
+}
 
 interface ClickArgs {
     samples: CursorSample[];
@@ -201,6 +212,11 @@ interface ScrollArgs {
     dy: number;
     steps: number;
     mode: DeliveryMode;
+}
+interface TabsOp {
+    action: "list" | "select" | "new" | "close";
+    id?: number;
+    url?: string;
 }
 interface WaitArgs {
     ref?: string;
@@ -243,6 +259,10 @@ interface BrowserDriver {
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
     evaluate(expression: string): Promise<unknown>;
+    tabs(op: TabsOp): Promise<{
+        tabs: TabInfo[];
+        pinned?: number;
+    }>;
 }
 
 interface Rng {
@@ -407,6 +427,10 @@ declare class ActionService {
     navigate(url: string): Promise<void>;
     getUrl(): Promise<string>;
     evaluate(fn: string, args?: unknown[]): Promise<unknown>;
+    tabs(op: TabsOp): Promise<{
+        tabs: TabInfo[];
+        pinned?: number;
+    }>;
     waitFor(opts: {
         ref?: string;
         text?: string;
@@ -575,6 +599,11 @@ declare class AgentCursor {
     goto(url: string): Promise<AgentCursor>;
     url(): Promise<string>;
     evaluate<T = unknown>(fn: string | ((...a: any[]) => any), ...args: unknown[]): Promise<T>;
+    /** List tabs or pick the one this instance drives (default: the active tab); see the `tabs` tool. */
+    tabs(op?: TabsOp): Promise<{
+        tabs: TabInfo[];
+        pinned?: number;
+    }>;
     scroll(opts: {
         dy: number;
         dx?: number;
@@ -697,6 +726,10 @@ declare class DesktopService {
         app?: string;
         maxResults?: number;
     }): Promise<DesktopElement[]>;
+    waitFor(text: string, opts?: {
+        app?: string;
+        timeoutMs?: number;
+    }): Promise<DesktopElement | undefined>;
     click(t: DesktopTarget & {
         button?: MouseButton;
         double?: boolean;
@@ -860,11 +893,20 @@ declare class ExtensionTransport {
     private readonly wss;
     private socket;
     private readonly pending;
+    private tab;
     constructor(port?: number);
     /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
     listening(): Promise<number>;
     get connected(): boolean;
     send(command: Command, timeoutMs?: number): Promise<unknown>;
+    tabs(op: {
+        action: "list" | "select" | "new" | "close";
+        id?: number;
+        url?: string;
+    }): Promise<{
+        tabs: TabInfo[];
+        pinned?: number;
+    }>;
     private onMessage;
     close(): void;
 }
@@ -901,6 +943,10 @@ declare class ExtensionDriver implements BrowserDriver {
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
     evaluate(expression: string): Promise<unknown>;
+    tabs(op: TabsOp): Promise<{
+        tabs: TabInfo[];
+        pinned?: number;
+    }>;
 }
 
 /**
@@ -936,6 +982,10 @@ declare class OsCursorDriver implements BrowserDriver {
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
     evaluate(expression: string): Promise<unknown>;
+    tabs(op: TabsOp): Promise<{
+        tabs: TabInfo[];
+        pinned?: number;
+    }>;
     cursorState(): Promise<Point>;
     move(samples: CursorSample[], _mode: DeliveryMode): Promise<void>;
     click(args: ClickArgs): Promise<void>;

@@ -599,6 +599,9 @@ var ActionService = class {
   evaluate(fn, args = []) {
     return this.driver.evaluate(buildEvalExpression(fn, args));
   }
+  tabs(op) {
+    return this.driver.tabs(op);
+  }
   async waitFor(opts) {
     await this.idleDrift();
     return this.driver.waitFor({
@@ -1153,6 +1156,14 @@ var DesktopService = class {
     const view = await this.read({ app: opts.app, max: 400 });
     return rankByText(view.elements, text3).slice(0, opts.maxResults ?? 8);
   }
+  async waitFor(text3, opts = {}) {
+    const deadline = Date.now() + (opts.timeoutMs ?? 1e4);
+    for (; ; ) {
+      const [hit] = await this.find(text3, { app: opts.app, maxResults: 1 });
+      if (hit || Date.now() >= deadline) return hit;
+      await sleep(250);
+    }
+  }
   async click(t) {
     const target2 = await this.resolve(t);
     await this.front(target2.pid);
@@ -1431,6 +1442,9 @@ var ExtensionDriver = class {
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
   }
+  tabs(op) {
+    return this.transport.tabs(op);
+  }
 };
 
 // src/drivers/coord-map.ts
@@ -1519,6 +1533,9 @@ var OsCursorDriver = class {
   }
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, 6e4);
+  }
+  tabs(op) {
+    return this.transport.tabs(op);
   }
   async cursorState() {
     const nut = await loadNut();
@@ -1635,6 +1652,17 @@ function registerDesktopTools(server, desktop) {
       const body = changes ? readOrDiff(lastRead.get(desktop), lines) : lines.join("\n");
       lastRead.set(desktop, lines);
       return text(body);
+    }
+  );
+  server.registerTool(
+    "desktop_wait_for",
+    {
+      description: "Wait until text or a label shows up in the app window (a page or list still loading), then return the match with its [dN] ref. timeoutMs defaults to 10000.",
+      inputSchema: { text: z.string(), app: z.string().optional(), timeoutMs: z.number().int().min(0).max(12e4).optional() }
+    },
+    async ({ text: query, app, timeoutMs }) => {
+      const hit = await desktop.waitFor(query, { app, timeoutMs });
+      return text(hit ? formatElement(hit) : `"${query}" did not appear within ${timeoutMs ?? 1e4}ms.`);
     }
   );
   server.registerTool(
@@ -1861,7 +1889,7 @@ function registerTools(server, action) {
   server.registerTool(
     "navigate",
     {
-      description: "Navigate the active tab to a URL.",
+      description: "Navigate the driven tab (the active one unless `tabs` picked another) to a URL.",
       inputSchema: { url: z2.string() }
     },
     async ({ url }) => {
@@ -1870,8 +1898,27 @@ function registerTools(server, action) {
     }
   );
   server.registerTool(
+    "tabs",
+    {
+      description: "List browser tabs, or pick the one every browser tool drives (default: the active tab). select pins a tab by id or by URL/title text without switching to it; select with neither goes back to the active tab. new opens a URL in a background tab and pins it. close closes a tab (default: the pinned one). A background tab supports read_page, find, click, type and navigate, not screenshot.",
+      inputSchema: {
+        action: z2.enum(["list", "select", "new", "close"]).optional(),
+        id: z2.number().int().optional(),
+        url: z2.string().optional()
+      }
+    },
+    async ({ action: op = "list", id, url }) => {
+      const { tabs, pinned } = await action.tabs({ action: op, id, url });
+      const lines = tabs.map(
+        (t) => `${t.id === pinned ? ">" : " "} ${t.id}${t.active ? " (active)" : ""} ${t.title} | ${t.url}`
+      );
+      return text2(`${pinned ? `driving tab ${pinned}` : "driving the active tab"}
+${lines.join("\n")}`);
+    }
+  );
+  server.registerTool(
     "get_url",
-    { description: "Return the active tab's current URL.", inputSchema: {} },
+    { description: "Return the driven tab's current URL.", inputSchema: {} },
     async () => text2(await action.getUrl())
   );
   server.registerTool(
@@ -2047,6 +2094,7 @@ var ExtensionTransport = class {
   wss;
   socket = null;
   pending = /* @__PURE__ */ new Map();
+  tab;
   constructor(port = DEFAULT_WS_PORT) {
     this.wss = new WebSocketServer({ host: "127.0.0.1", port });
     this.wss.on("error", (err) => {
@@ -2088,7 +2136,7 @@ var ExtensionTransport = class {
       return Promise.reject(new Error(NOT_CONNECTED));
     }
     const id = randomUUID();
-    const envelope = { v: PROTOCOL_VERSION, id, command: command2 };
+    const envelope = { v: PROTOCOL_VERSION, id, command: command2, tab: this.tab };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -2097,6 +2145,11 @@ var ExtensionTransport = class {
       this.pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify(envelope));
     });
+  }
+  async tabs(op) {
+    const res = await this.send({ kind: "tabs", ...op });
+    if (res.pin !== void 0) this.tab = res.pin ?? void 0;
+    return { tabs: res.tabs, pinned: this.tab };
   }
   onMessage(raw) {
     let result;
