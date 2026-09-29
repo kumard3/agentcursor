@@ -62,7 +62,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "type",
         desc: "Type into a field (ref, or into = its label) or the focused one. Sets the text through accessibility, so it lands in background apps. keys types keystroke by keystroke instead (native apps). clear replaces the text, submit presses Enter.",
-        params: &[req("text", "string", "text to type"), REF, opt("into", "string", "label of the field"), APP, opt("clear", "boolean", "replace the current text"), opt("submit", "boolean", "press Enter after"), opt("keys", "boolean", "send real keystrokes")],
+        params: &[req("text", "string", "text to type"), REF, opt("into", "string", "label of the field"), APP, opt("clear", "boolean", "replace the current text"), opt("submit", "boolean", "press Enter after"), opt("keys", "boolean", "send real keystrokes"), opt("fast", "boolean", "set the text at once instead of typing it")],
     },
     Tool {
         name: "key",
@@ -280,8 +280,10 @@ pub fn call(name: &str, args: &Value) -> Result<Reply, String> {
             };
             let field = target.as_ref().and_then(|t| t.handle().cloned()).or_else(|| os::focused_element(app.pid));
             let clear = b(&args, "clear");
+            // ponytail: past 200 chars typing takes >15 s, so long text is set at once
+            let human = !b(&args, "fast") && value.chars().count() <= 200;
             let how = match &field {
-                Some(f) if !b(&args, "keys") && os::set_text(f, &value, clear) => "set",
+                Some(f) if !b(&args, "keys") && os::set_text(f, &value, clear, human) => if human { "typed" } else { "set" },
                 _ => {
                     if let Some(f) = &field {
                         os::press(f);

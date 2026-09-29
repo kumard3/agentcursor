@@ -541,10 +541,26 @@ pub fn focused_element(pid: i32) -> Option<Ax> {
 }
 
 /// Focus the field and set its value; false when the app does not allow it.
-pub fn set_text(h: &Ax, value: &str, replace: bool) -> bool {
+/// Focus the field and set its text. `human` grows it a character at a time with typing
+/// pauses, so every step fires the page's input event the way keystrokes do.
+/// False when the field refuses (nothing was typed then).
+pub fn set_text(h: &Ax, value: &str, replace: bool, human: bool) -> bool {
     h.set("AXFocused", &CFBoolean::true_value().as_CFType());
-    let next = if replace { value.to_string() } else { format!("{}{}", h.str("AXValue"), value) };
-    h.set("AXValue", &cfstr(&next).as_CFType()) == 0
+    let base = if replace { String::new() } else { h.str("AXValue") };
+    if !human {
+        return h.set("AXValue", &cfstr(&format!("{base}{value}")).as_CFType()) == 0;
+    }
+    let mut rng = crate::motion::Rng::fresh();
+    let mut typed = String::new();
+    for (i, ch) in value.chars().enumerate() {
+        typed.push(ch);
+        if h.set("AXValue", &cfstr(&format!("{base}{typed}")).as_CFType()) != 0 && i == 0 {
+            return false;
+        }
+        let pause = rng.range(45.0, 120.0) + if ch == ' ' { rng.range(40.0, 120.0) } else { 0.0 };
+        std::thread::sleep(Duration::from_millis(pause as u64));
+    }
+    true
 }
 
 pub fn confirm(h: &Ax) -> bool {
