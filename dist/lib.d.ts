@@ -180,6 +180,15 @@ type Command = {
     action: "list" | "select" | "new" | "close";
     id?: number;
     url?: string;
+} | {
+    kind: "startScreencast";
+    format?: "jpeg" | "png";
+    quality?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+    everyNthFrame?: number;
+} | {
+    kind: "stopScreencast";
 };
 interface TabInfo {
     id: number;
@@ -187,7 +196,32 @@ interface TabInfo {
     url: string;
     active: boolean;
 }
+/**
+ * Pushed from the extension without a command to answer. Screencast frames
+ * arrive this way: one command starts the stream, then frames keep coming
+ * until it is stopped.
+ */
+type ExtensionEvent = {
+    event: "screencastFrame";
+    data: string;
+    metadata?: {
+        offsetTop?: number;
+        pageScaleFactor?: number;
+        deviceWidth?: number;
+        deviceHeight?: number;
+        scrollOffsetX?: number;
+        scrollOffsetY?: number;
+        timestamp?: number;
+    };
+};
 
+interface ScreencastOptions {
+    format?: "jpeg" | "png";
+    quality?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+    everyNthFrame?: number;
+}
 interface ClickArgs {
     samples: CursorSample[];
     target: Point;
@@ -263,6 +297,8 @@ interface BrowserDriver {
         tabs: TabInfo[];
         pinned?: number;
     }>;
+    startScreencast(options: ScreencastOptions): Promise<void>;
+    stopScreencast(): Promise<void>;
 }
 
 interface Rng {
@@ -431,6 +467,14 @@ declare class ActionService {
         tabs: TabInfo[];
         pinned?: number;
     }>;
+    startScreencast(options?: {
+        format?: "jpeg" | "png";
+        quality?: number;
+        maxWidth?: number;
+        maxHeight?: number;
+        everyNthFrame?: number;
+    }): Promise<void>;
+    stopScreencast(): Promise<void>;
     waitFor(opts: {
         ref?: string;
         text?: string;
@@ -485,6 +529,36 @@ interface LaunchOptions {
      * click it. Chrome otherwise builds that tree only for a screen reader, and a desktop read
      * sees the toolbar but no page content. */
     accessibility?: boolean;
+}
+
+interface RecordOptions {
+    /** Where the mp4 goes. Omit to keep the frames and skip encoding. */
+    path?: string;
+    /** Frame directory. Defaults to a temporary directory. */
+    dir?: string;
+    format?: "jpeg" | "png";
+    /** jpeg quality, 0-100. Lower is smaller. */
+    quality?: number;
+    /** Cap the frame width. The aspect ratio is kept. */
+    maxWidth?: number;
+    /** 1 captures every painted frame, 2 every other, and so on. */
+    everyNthFrame?: number;
+    /** Keep the frames after encoding. Off by default once an mp4 exists. */
+    keepFrames?: boolean;
+}
+interface RecordingResult {
+    /** The encoded file, when a path was given and ffmpeg was available. */
+    path?: string;
+    /** Where the frames are, if they were kept. */
+    dir?: string;
+    frames: number;
+    durationMs: number;
+    /** Why there is no mp4, when there is no mp4. */
+    note?: string;
+}
+interface Recording {
+    readonly dir: string;
+    stop(): Promise<RecordingResult>;
 }
 
 interface LocatorContext {
@@ -616,6 +690,17 @@ declare class AgentCursor {
         format?: "png" | "jpeg";
         path?: string;
     }): Promise<string>;
+    /**
+     * Records what the tab paints, cursor included, until the returned handle is
+     * stopped. Frames come from CDP so they are not subject to the two-per-second
+     * cap on tab capture, and each one carries the paint timestamp, so the encode
+     * plays back at the speed the run actually happened.
+     *
+     *   const recording = await ac.record({ path: "run.mp4" });
+     *   ...drive the page...
+     *   const { path, frames } = await recording.stop();
+     */
+    record(options?: RecordOptions): Promise<Recording>;
     close(): Promise<void>;
     private ctx;
     private root;
@@ -893,6 +978,7 @@ declare class ExtensionTransport {
     private readonly wss;
     private socket;
     private readonly pending;
+    private readonly listeners;
     private tab;
     constructor(port?: number);
     /** Resolves to the bound port; pass port 0 to the constructor for a free one. */
@@ -907,6 +993,8 @@ declare class ExtensionTransport {
         tabs: TabInfo[];
         pinned?: number;
     }>;
+    /** Subscribe to pushed events (screencast frames). Returns an unsubscribe. */
+    onEvent(handler: (event: ExtensionEvent) => void): () => void;
     private onMessage;
     close(): void;
 }
@@ -942,6 +1030,14 @@ declare class ExtensionDriver implements BrowserDriver {
         timeoutMs: number;
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
+    startScreencast(options: {
+        format?: "jpeg" | "png";
+        quality?: number;
+        maxWidth?: number;
+        maxHeight?: number;
+        everyNthFrame?: number;
+    }): Promise<void>;
+    stopScreencast(): Promise<void>;
     evaluate(expression: string): Promise<unknown>;
     tabs(op: TabsOp): Promise<{
         tabs: TabInfo[];
@@ -981,6 +1077,14 @@ declare class OsCursorDriver implements BrowserDriver {
         timeoutMs: number;
         scrollIntoView?: boolean;
     }): Promise<LocatorMatch>;
+    startScreencast(options: {
+        format?: "jpeg" | "png";
+        quality?: number;
+        maxWidth?: number;
+        maxHeight?: number;
+        everyNthFrame?: number;
+    }): Promise<void>;
+    stopScreencast(): Promise<void>;
     evaluate(expression: string): Promise<unknown>;
     tabs(op: TabsOp): Promise<{
         tabs: TabInfo[];
@@ -994,4 +1098,4 @@ declare class OsCursorDriver implements BrowserDriver {
     private geometry;
 }
 
-export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, CursorOverlay, type CursorSample, type DeliveryMode, Desktop, type DesktopOptions, type DesktopQuery, DesktopService, type DesktopServiceOptions, type Expectation, ExtensionDriver, ExtensionTransport, type KeyOp, type LaunchOptions, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type OverlayOptions, type PageElement, type PageSnapshot, Persona, type PersonaInfo, type PersonaOptions, type PersonaTraits, type Point, type Rect, buildTypingSchedule, createPersona, createRng, expect, flattenSchedule, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs, scheduleToKeystrokes };
+export { ActionService, AgentCursor, type BrowserDriver, type ByOptions, type ByRoleOptions, type ConnectOptions, CursorOverlay, type CursorSample, type DeliveryMode, Desktop, type DesktopOptions, type DesktopQuery, DesktopService, type DesktopServiceOptions, type Expectation, ExtensionDriver, ExtensionTransport, type KeyOp, type LaunchOptions, Locator, type LocatorContext, type LocatorMatch, type LocatorSpec, type LocatorStep, type MouseButton, OsCursorDriver, type OverlayOptions, type PageElement, type PageSnapshot, Persona, type PersonaInfo, type PersonaOptions, type PersonaTraits, type Point, type RecordOptions, type Recording, type RecordingResult, type Rect, buildTypingSchedule, createPersona, createRng, expect, flattenSchedule, generateMove, offCenterPoint, sampleDwellMs, sampleKeyDelayMs, samplePressMs, scheduleToKeystrokes };

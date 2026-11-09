@@ -31,7 +31,11 @@ var CDP_KEYS = {
   " ": { code: "Space", vk: 32 }
 };
 var DebuggerDriver = class {
-  attached = /* @__PURE__ */ new Set();
+  // Refcounted: a recording holds a lease for its whole life, so the
+  // attach/detach around each input command cannot pull the session out from
+  // under it.
+  leases = /* @__PURE__ */ new Map();
+  screencasts = /* @__PURE__ */ new Map();
   async handle(tabId, cmd) {
     await this.attach(tabId);
     try {
@@ -82,17 +86,60 @@ var DebuggerDriver = class {
     }
   }
   async attach(tabId) {
-    if (this.attached.has(tabId)) return;
-    await chrome.debugger.attach({ tabId }, "1.3");
-    this.attached.add(tabId);
+    const held = this.leases.get(tabId) ?? 0;
+    if (held === 0) await chrome.debugger.attach({ tabId }, "1.3");
+    this.leases.set(tabId, held + 1);
   }
   async detach(tabId) {
-    if (!this.attached.has(tabId)) return;
-    this.attached.delete(tabId);
+    const held = this.leases.get(tabId) ?? 0;
+    if (held === 0) return;
+    if (held > 1) {
+      this.leases.set(tabId, held - 1);
+      return;
+    }
+    this.leases.delete(tabId);
     try {
       await chrome.debugger.detach({ tabId });
     } catch {
     }
+  }
+  /**
+   * Streams what the tab paints, as CDP screencast frames. Each frame is
+   * handed to onFrame and acknowledged, which is what keeps the next one
+   * coming. The visible cursor is a DOM overlay, so it is in the frames.
+   */
+  async startScreencast(tabId, options, onFrame) {
+    if (this.screencasts.has(tabId)) return;
+    await this.attach(tabId);
+    const listener = (source, method, params) => {
+      if (source.tabId !== tabId || method !== "Page.screencastFrame") return;
+      const frame = params;
+      onFrame({ data: frame.data, metadata: frame.metadata });
+      void chrome.debugger.sendCommand({ tabId }, "Page.screencastFrameAck", {
+        sessionId: frame.sessionId
+      }).catch(() => void 0);
+    };
+    chrome.debugger.onEvent.addListener(listener);
+    this.screencasts.set(tabId, listener);
+    await this.send(tabId, "Page.enable", {});
+    await this.send(tabId, "Page.startScreencast", {
+      format: options.format ?? "jpeg",
+      quality: options.quality ?? 80,
+      everyNthFrame: options.everyNthFrame ?? 1,
+      ...options.maxWidth ? { maxWidth: options.maxWidth } : {},
+      ...options.maxHeight ? { maxHeight: options.maxHeight } : {}
+    });
+  }
+  async stopScreencast(tabId) {
+    const listener = this.screencasts.get(tabId);
+    if (!listener) return;
+    this.screencasts.delete(tabId);
+    chrome.debugger.onEvent.removeListener(listener);
+    try {
+      await this.send(tabId, "Page.stopScreencast", {});
+    } catch {
+    }
+    await this.detach(tabId);
   }
   send(tabId, method, params) {
     return chrome.debugger.sendCommand({ tabId }, method, params);
@@ -332,6 +379,24 @@ async function route(cmd, pinned) {
   }
   if (cmd.kind === "hover" || cmd.kind === "ensureVisible") {
     return sendToContent(tabId, cmd);
+  }
+  if (cmd.kind === "startScreencast") {
+    await debuggerDriver.startScreencast(tabId, cmd, (frame) => {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({
+            event: "screencastFrame",
+            data: frame.data,
+            metadata: frame.metadata
+          })
+        );
+      }
+    });
+    return null;
+  }
+  if (cmd.kind === "stopScreencast") {
+    await debuggerDriver.stopScreencast(tabId);
+    return null;
   }
   if (cmd.kind === "evaluate") {
     return debuggerDriver.evaluate(tabId, cmd.expression);

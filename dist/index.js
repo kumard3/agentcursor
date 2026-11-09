@@ -156,6 +156,9 @@ function buildEvalExpression(fn, args = []) {
   const argList = args.map((a) => JSON.stringify(a) ?? "undefined").join(",");
   return `(${fn.trim()})(${argList})`;
 }
+function isExtensionEvent(value) {
+  return typeof value === "object" && value !== null && "event" in value && typeof value.event === "string";
+}
 
 // src/path-engine/geometry.ts
 function distance(a, b) {
@@ -601,6 +604,12 @@ var ActionService = class {
   }
   tabs(op) {
     return this.driver.tabs(op);
+  }
+  startScreencast(options = {}) {
+    return this.driver.startScreencast(options);
+  }
+  stopScreencast() {
+    return this.driver.stopScreencast();
   }
   async waitFor(opts) {
     await this.idleDrift();
@@ -1439,6 +1448,12 @@ var ExtensionDriver = class {
       opts.timeoutMs + 5e3
     );
   }
+  async startScreencast(options) {
+    await this.transport.send({ kind: "startScreencast", ...options }, ACTION_TIMEOUT_MS);
+  }
+  async stopScreencast() {
+    await this.transport.send({ kind: "stopScreencast" }, ACTION_TIMEOUT_MS);
+  }
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
   }
@@ -1530,6 +1545,12 @@ var OsCursorDriver = class {
       { kind: "resolveLocator", spec, timeoutMs: opts.timeoutMs, scrollIntoView: opts.scrollIntoView },
       opts.timeoutMs + 5e3
     );
+  }
+  async startScreencast(options) {
+    await this.transport.send({ kind: "startScreencast", ...options }, 6e4);
+  }
+  async stopScreencast() {
+    await this.transport.send({ kind: "stopScreencast" }, 6e4);
   }
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, 6e4);
@@ -2094,6 +2115,7 @@ var ExtensionTransport = class {
   wss;
   socket = null;
   pending = /* @__PURE__ */ new Map();
+  listeners = /* @__PURE__ */ new Set();
   tab;
   constructor(port = DEFAULT_WS_PORT) {
     this.wss = new WebSocketServer({ host: "127.0.0.1", port });
@@ -2151,11 +2173,20 @@ var ExtensionTransport = class {
     if (res.pin !== void 0) this.tab = res.pin ?? void 0;
     return { tabs: res.tabs, pinned: this.tab };
   }
+  /** Subscribe to pushed events (screencast frames). Returns an unsubscribe. */
+  onEvent(handler) {
+    this.listeners.add(handler);
+    return () => this.listeners.delete(handler);
+  }
   onMessage(raw) {
     let result;
     try {
       result = JSON.parse(raw);
     } catch {
+      return;
+    }
+    if (isExtensionEvent(result)) {
+      for (const handler of this.listeners) handler(result);
       return;
     }
     const entry = this.pending.get(result.id);
@@ -2168,6 +2199,7 @@ var ExtensionTransport = class {
   close() {
     for (const entry of this.pending.values()) clearTimeout(entry.timer);
     this.pending.clear();
+    this.listeners.clear();
     this.wss.close();
   }
 };

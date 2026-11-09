@@ -8,6 +8,9 @@ function buildEvalExpression(fn, args = []) {
   const argList = args.map((a) => JSON.stringify(a) ?? "undefined").join(",");
   return `(${fn.trim()})(${argList})`;
 }
+function isExtensionEvent(value) {
+  return typeof value === "object" && value !== null && "event" in value && typeof value.event === "string";
+}
 
 // src/path-engine/geometry.ts
 function distance(a, b) {
@@ -471,6 +474,12 @@ var ActionService = class {
   tabs(op) {
     return this.driver.tabs(op);
   }
+  startScreencast(options = {}) {
+    return this.driver.startScreencast(options);
+  }
+  stopScreencast() {
+    return this.driver.stopScreencast();
+  }
   async waitFor(opts) {
     await this.idleDrift();
     return this.driver.waitFor({
@@ -697,6 +706,12 @@ var ExtensionDriver = class {
       opts.timeoutMs + 5e3
     );
   }
+  async startScreencast(options) {
+    await this.transport.send({ kind: "startScreencast", ...options }, ACTION_TIMEOUT_MS);
+  }
+  async stopScreencast() {
+    await this.transport.send({ kind: "stopScreencast" }, ACTION_TIMEOUT_MS);
+  }
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
   }
@@ -917,6 +932,12 @@ var OsCursorDriver = class {
       opts.timeoutMs + 5e3
     );
   }
+  async startScreencast(options) {
+    await this.transport.send({ kind: "startScreencast", ...options }, 6e4);
+  }
+  async stopScreencast() {
+    await this.transport.send({ kind: "stopScreencast" }, 6e4);
+  }
   async evaluate(expression) {
     return this.transport.send({ kind: "evaluate", expression }, 6e4);
   }
@@ -962,6 +983,7 @@ var ExtensionTransport = class {
   wss;
   socket = null;
   pending = /* @__PURE__ */ new Map();
+  listeners = /* @__PURE__ */ new Set();
   tab;
   constructor(port = DEFAULT_WS_PORT) {
     this.wss = new WebSocketServer({ host: "127.0.0.1", port });
@@ -1019,11 +1041,20 @@ var ExtensionTransport = class {
     if (res.pin !== void 0) this.tab = res.pin ?? void 0;
     return { tabs: res.tabs, pinned: this.tab };
   }
+  /** Subscribe to pushed events (screencast frames). Returns an unsubscribe. */
+  onEvent(handler) {
+    this.listeners.add(handler);
+    return () => this.listeners.delete(handler);
+  }
   onMessage(raw) {
     let result;
     try {
       result = JSON.parse(raw);
     } catch {
+      return;
+    }
+    if (isExtensionEvent(result)) {
+      for (const handler of this.listeners) handler(result);
       return;
     }
     const entry = this.pending.get(result.id);
@@ -1036,6 +1067,7 @@ var ExtensionTransport = class {
   close() {
     for (const entry of this.pending.values()) clearTimeout(entry.timer);
     this.pending.clear();
+    this.listeners.clear();
     this.wss.close();
   }
 };
@@ -1060,11 +1092,11 @@ var CHROME_PATHS = {
   ]
 };
 function findChrome(explicit) {
-  const path = explicit ?? process.env.AGENTCURSOR_CHROME ?? (CHROME_PATHS[process.platform] ?? []).find(existsSync);
-  if (!path || !existsSync(path)) {
+  const path2 = explicit ?? process.env.AGENTCURSOR_CHROME ?? (CHROME_PATHS[process.platform] ?? []).find(existsSync);
+  if (!path2 || !existsSync(path2)) {
     throw new Error("agentcursor: Chrome not found. Pass { executablePath } or set AGENTCURSOR_CHROME.");
   }
-  return path;
+  return path2;
 }
 function extensionDir() {
   for (const rel of ["../extension", "../../extension"]) {
@@ -1162,6 +1194,108 @@ var PipeCdp = class {
     }
   }
 };
+
+// src/sdk/recorder.ts
+import { execFile, execFileSync } from "child_process";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { promisify } from "util";
+var run = promisify(execFile);
+function hasFfmpeg() {
+  try {
+    execFileSync("ffmpeg", ["-version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function createRecorder(options) {
+  const dir = options.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), "agentcursor-recording-"));
+  fs.mkdirSync(dir, { recursive: true });
+  const extension = options.format === "png" ? "png" : "jpg";
+  const frames = [];
+  const startedAt = Date.now();
+  return {
+    dir,
+    addFrame(data, timestamp) {
+      const file = path.join(
+        dir,
+        `${String(frames.length).padStart(6, "0")}.${extension}`
+      );
+      fs.writeFileSync(file, Buffer.from(data, "base64"));
+      frames.push({ file, timestamp });
+    },
+    async finish() {
+      const durationMs = Date.now() - startedAt;
+      fs.writeFileSync(
+        path.join(dir, "manifest.json"),
+        JSON.stringify({ frames: frames.length, durationMs, frameList: frames }, null, 2)
+      );
+      if (!options.path) {
+        return { dir, frames: frames.length, durationMs };
+      }
+      if (frames.length === 0) {
+        return { dir, frames: 0, durationMs, note: "no frames were captured" };
+      }
+      if (!hasFfmpeg()) {
+        return {
+          dir,
+          frames: frames.length,
+          durationMs,
+          note: "ffmpeg is not on PATH, so the frames were kept unencoded"
+        };
+      }
+      const fallback = durationMs / 1e3 / frames.length;
+      const quote = (file) => `file '${file.replace(/'/g, "'\\''")}'`;
+      const lines = [];
+      for (const [index, current] of frames.entries()) {
+        const next = frames[index + 1];
+        const gap = current.timestamp && next?.timestamp ? Math.min(Math.max(next.timestamp - current.timestamp, 2e-3), 5) : fallback;
+        lines.push(quote(current.file));
+        lines.push(`duration ${gap.toFixed(4)}`);
+      }
+      const last = frames[frames.length - 1];
+      if (last) lines.push(quote(last.file));
+      const listFile = path.join(dir, "frames.txt");
+      fs.writeFileSync(listFile, lines.join("\n"));
+      fs.mkdirSync(path.dirname(path.resolve(options.path)), { recursive: true });
+      const scale = options.maxWidth ? `scale=${options.maxWidth}:-2,` : "";
+      await run("ffmpeg", [
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        listFile,
+        "-vf",
+        `${scale}pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=30`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "22",
+        "-pix_fmt",
+        "yuv420p",
+        options.path
+      ]);
+      if (!options.keepFrames) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+      return {
+        path: options.path,
+        dir: options.keepFrames ? dir : void 0,
+        frames: frames.length,
+        durationMs
+      };
+    }
+  };
+}
 
 // src/sdk/locator.ts
 var delay2 = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1400,6 +1534,41 @@ var AgentCursor = class _AgentCursor {
     }
     return data;
   }
+  /**
+   * Records what the tab paints, cursor included, until the returned handle is
+   * stopped. Frames come from CDP so they are not subject to the two-per-second
+   * cap on tab capture, and each one carries the paint timestamp, so the encode
+   * plays back at the speed the run actually happened.
+   *
+   *   const recording = await ac.record({ path: "run.mp4" });
+   *   ...drive the page...
+   *   const { path, frames } = await recording.stop();
+   */
+  async record(options = {}) {
+    const recorder = createRecorder(options);
+    const unsubscribe = this.transport.onEvent((event) => {
+      if (event.event !== "screencastFrame") return;
+      recorder.addFrame(event.data, event.metadata?.timestamp);
+    });
+    await this.action.startScreencast({
+      format: options.format,
+      quality: options.quality,
+      maxWidth: options.maxWidth,
+      everyNthFrame: options.everyNthFrame
+    });
+    let stopped = false;
+    return {
+      dir: recorder.dir,
+      stop: async () => {
+        if (!stopped) {
+          stopped = true;
+          await this.action.stopScreencast().catch(() => void 0);
+          unsubscribe();
+        }
+        return recorder.finish();
+      }
+    };
+  }
   async close() {
     this.transport.close();
     await this.dispose?.();
@@ -1428,14 +1597,14 @@ async function waitForConnection(t, port, timeoutMs) {
 import { writeFile as writeFile2 } from "fs/promises";
 
 // src/desktop/service.ts
-import { execFile as execFile2 } from "child_process";
+import { execFile as execFile3 } from "child_process";
 import { mkdtemp, readFile, rm } from "fs/promises";
 import { tmpdir as tmpdir2 } from "os";
 import { join as join2 } from "path";
-import { promisify } from "util";
+import { promisify as promisify2 } from "util";
 
 // src/desktop/ax.ts
-import { execFile } from "child_process";
+import { execFile as execFile2 } from "child_process";
 import { existsSync as existsSync2 } from "fs";
 import { fileURLToPath as fileURLToPath2 } from "url";
 var helperPath = fileURLToPath2(new URL("./native/agentcursor-ax", import.meta.url));
@@ -1444,7 +1613,7 @@ function ax(args, timeoutMs = 2e4, stdin) {
     return Promise.reject(new Error("Desktop control currently supports macOS only."));
   }
   return new Promise((resolve, reject) => {
-    const child = execFile(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+    const child = execFile2(helperPath, args, { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
       if (err?.code === "ENOENT") {
         return reject(new Error(`Desktop helper missing at ${helperPath}. Run \`pnpm build\`.`));
       }
@@ -1580,7 +1749,7 @@ function keyOps(schedule) {
 }
 
 // src/desktop/service.ts
-var run = promisify(execFile2);
+var run2 = promisify2(execFile3);
 var DesktopService = class {
   constructor(persona, opts = {}) {
     this.persona = persona;
@@ -1632,7 +1801,7 @@ var DesktopService = class {
   async open(app) {
     if (this.background) return this.openInBackground(app);
     const before = (await this.apps()).find((a) => a.active)?.pid;
-    await run("open", ["-a", app]).catch((e) => {
+    await run2("open", ["-a", app]).catch((e) => {
       throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
     });
     const want = app.toLowerCase();
@@ -1657,7 +1826,7 @@ var DesktopService = class {
     };
     let found = (await this.apps()).find(running);
     if (!found) {
-      await run("open", ["-g", "-a", app]).catch((e) => {
+      await run2("open", ["-g", "-a", app]).catch((e) => {
         throw new Error(e.stderr?.trim() || `Could not open "${app}"`);
       });
       for (let i = 0; i < 40 && !found; i++) {
@@ -1797,10 +1966,10 @@ var DesktopService = class {
     const dir = await mkdtemp(join2(tmpdir2(), "agentcursor-shot-"));
     const file = join2(dir, "shot.jpg");
     try {
-      await run("screencapture", ["-x", "-t", "jpg", `-R${rect.x},${rect.y},${rect.width},${rect.height}`, file]);
+      await run2("screencapture", ["-x", "-t", "jpg", `-R${rect.x},${rect.y},${rect.width},${rect.height}`, file]);
       const maxWidth = opts.maxWidth ?? 1024;
       if ((await imageSize(file)).width > maxWidth) {
-        await run("sips", ["--resampleWidth", String(maxWidth), file]);
+        await run2("sips", ["--resampleWidth", String(maxWidth), file]);
       }
       const size = await imageSize(file);
       const scale = rect.width / size.width;
@@ -1887,7 +2056,7 @@ function describe2(target2) {
   return target2.el ? `[${target2.el.ref}] ${target2.el.role} "${target2.el.name}" at ${at}` : at;
 }
 async function imageSize(file) {
-  const { stdout } = await run("sips", ["-g", "pixelWidth", "-g", "pixelHeight", file]);
+  const { stdout } = await run2("sips", ["-g", "pixelWidth", "-g", "pixelHeight", file]);
   return {
     width: Number(/pixelWidth: (\d+)/.exec(stdout)?.[1] ?? 0),
     height: Number(/pixelHeight: (\d+)/.exec(stdout)?.[1] ?? 0)
