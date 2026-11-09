@@ -1,6 +1,6 @@
 {
   "name": "agentcursor",
-  "description": "Local, free, human-like browser automation over MCP. A visible, realistic cursor for coding agents, E2E testing, and workflows on real sites.",
+  "description": "Local, free computer use and browser automation over MCP. A visible, human-paced cursor for any Mac app (Rust core) or Chrome tab (extension), with text-first reads.",
   "version": "0.4.0",
   "author": { "name": "Kumar Deepanshu" },
   "homepage": "https://github.com/kumard3/agentcursor",

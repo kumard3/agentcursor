@@ -1,29 +1,58 @@
 # AgentCursor
 
-**Local, free, human-like cursor for AI agents: any Mac app or browser tab, over MCP.**
+**Computer use that reads windows as text, not screenshots. Any Mac app or browser tab, over MCP.**
 
-AgentCursor gives you (and any coding agent or automation script) a **real browser** driven with **visible, convincingly human cursor movement and timing**.
+![A local 27B model reading a TextEdit window, clicking into it and typing](docs/media/agentcursor-local.gif)
 
-Use it as:
-- A powerful MCP tool for Claude, Cursor, Grok, custom agents, etc.
-- A realistic E2E / acceptance testing tool that works on actual production sites (human paths + timing are more resilient than robotic Playwright clicks).
-- A workflow automation engine for complex multi-step processes (logins, form flows, data entry, admin tasks) with natural hover, move, type, and scroll behavior.
-- A debugging / demo automation tool (the cursor is visible so you can watch exactly what the automation did).
+*Above: a 27B model running entirely on the laptop drives TextEdit through AgentCursor. No network, no screenshots.*
 
-All local. All free. MIT licensed. No cloud, no paywalled stealth.
+Screenshot-based computer use pays 600 to 1,200 tokens every time an agent looks at a window. AgentCursor reads the macOS accessibility tree instead and hands the agent compact text:
 
-The major browser automation MCPs often make realistic movement a cloud-only feature. AgentCursor brings the realistic cursor to your local machine for agents **and** traditional testing/automation use cases.
+```
+TextEdit window "notes.txt" @195,92 656x422
+[d1] textarea value="AGENTCURSOR DEMO SCRATCH FILE" @523,316 focused
+[d2] button "Delete" @845,386
+```
 
-> Status: phase 1 (Chrome extension) and phase 2 (macOS OS-cursor for genuinely
-> trusted events) are both implemented. See [`docs/DESIGN.md`](docs/DESIGN.md).
+A full window read costs 60 to 130 tokens. Clicking `[d2]` costs about 9. Then the real cursor moves along a curved path and clicks, so you can watch what the agent did.
+
+That gap is what makes local models practical. In the run above, Bonsai 2 27B (ternary, 6.9 GB, on an M3 Pro) finished a read, click, type and verify loop in 6 turns and 180 seconds, with zero network calls. The same loop on screenshots would not fit the budget.
+
+## Two surfaces
+
+| | Browser extension | Computer use (Rust core) |
+| --- | --- | --- |
+| Drives | Chrome tabs, in your real logged-in profile | Any macOS app window |
+| Code | `src/` (Node MCP server) + `extension/` | `rust/` (one binary, `agentcursor`) |
+| Install | `pnpm build`, load `extension/` in Chrome | `cd rust && cargo build --release` |
+| Background | tabs via `tabs`; stealth mode for trusted events | accessibility actions; your front app and pointer stay put |
+| Docs | [docs/extension.md](docs/extension.md) | [docs/computer-use.md](docs/computer-use.md) |
+
+Web page task: use the extension. Native app task: use computer use. Coding agents: start with [AGENTS.md](AGENTS.md).
+
+All local. All free. MIT licensed. No cloud, no account. Computer use is macOS only (the Rust binary is arm64); the browser side runs wherever Chrome does. The Rust binary is not published anywhere yet: build it from source. There is no npm package named `agentcursor`.
+
+The Claude Code plugin still runs the Node server. The Rust core is a separate binary you register yourself (`agentcursor mcp`); it is not wired under the Node `desktop_*` tools.
 
 ## Quick start
+
+Browser extension and Node server:
 
 ```bash
 git clone https://github.com/kumard3/agentcursor.git
 cd agentcursor && pnpm install && pnpm build
 node dist/index.js setup
 ```
+
+Computer use (Rust core):
+
+```bash
+cd agentcursor/rust && cargo build --release
+./target/release/agentcursor tools
+./target/release/agentcursor read Safari
+```
+
+For MCP, point your client at `/abs/path/rust/target/release/agentcursor` with args `["mcp"]`.
 
 `setup` starts the local service, lists the AI apps it finds on your machine (Claude Code, Cursor, VS Code, Codex, Windsurf, Claude Desktop, Gemini CLI) and opens a setup page at `http://127.0.0.1:8931`. From there you connect each app with one click, grant the two macOS permissions, load the optional Chrome extension, and press **Test the cursor**. Prefer the terminal? `node dist/index.js setup --all` connects every detected app (or `--client=cursor,codex`).
 
@@ -33,6 +62,8 @@ How it fits together: every AI app launches `agentcursor` as an ordinary stdio M
 
 ## Changelog (key updates)
 
+- **0.5.0 (Rust core)**: `rust/` adds `agentcursor`, a 609 KB arm64 binary with CLI and MCP (`agentcursor mcp`) for computer use. Tools: apps, open, read, wait_for, click, type, key, scroll, screenshot, permissions. Clicks and typing go through accessibility actions, so background apps work without moving your pointer or changing your front app (verified on Chrome, Safari, TextEdit). Measured 2026-09-30 against the Node tools on one Mac: read 278 to 71 ms, find 221 to 55 ms, apps 166 to 14 ms, and 9.9 MB peak per call vs 126 MB plus 218 MB. See [docs/computer-use.md](docs/computer-use.md).
+- **Unreleased, `ac.record()`**: record a tab to mp4 from the SDK through a CDP screencast, encoded with ffmpeg at the real paint timing.
 - **Unreleased**: E2E testing. `AgentCursor.launch()` starts a private Chrome (throwaway profile, its own copy of the extension on a free port) with its own visible cursor, so tests never touch your mouse, your browser or the MCP server on 8930, and several can run side by side. Works headed or `headless: true`. Computer use reaches the SDK too: `Desktop.open("Notes")` drives any Mac app with the real cursor and text-first reads. New agent CLI: every tool is a shell command (`agentcursor read_page`, `agentcursor desktop_click --text Save`) sharing one background service, so no tool schemas ever enter the model's context. Refs now stay with an element across reads, so `read_page --changes` and `desktop_read --changes` return only what changed: a repeat read of an unchanged window costs ~8 estimated tokens instead of ~397. Page reads got ~43% smaller, and the stdio tool list dropped from about 3,178 to 2,735 estimated tokens. New `expect()` with auto-retrying matchers (`toBeVisible`, `toBeHidden`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveURL`, `.not`). `navigate` now waits for the page to load, commands wait briefly for the content script after a navigation, `isVisible()`/`count()` answer immediately instead of waiting 5s, and headless screenshots no longer return the previous frame.
 - **0.4.0**: Desktop control for any Mac app: `desktop_read` returns the window as compact text with `[dN]` refs from the macOS accessibility tree (a small Swift helper), then `desktop_click` / `desktop_type` / `desktop_key` / `desktop_scroll` drive the real cursor and keyboard with the same persona-based human motion. `desktop_screenshot` is a cropped, downscaled fallback. Chromium and Electron apps get their accessibility tree switched on automatically. New onboarding: `agentcursor setup` plus a local setup page that connects seven AI apps, checks permissions and tests the cursor. All AI apps now share one background service (stdio launches proxy to it), which removes the `port 8930 already in use` failure. The extension WebSocket now rejects connections from web pages.
 
@@ -334,8 +365,9 @@ Flags: `--user-data-dir DIR` (real profile, left intact; omit for a throwaway co
 | `press_key` | Press a single key (Enter, Escape, Tab, arrows, Home/End, PageUp/Down, Space, or a character) on the focused element. content or stealth. |
 | `scroll` | Eased, human-stepped scrolling. |
 | `screenshot` | Capture the visible tab as an image, scaled so 1 image pixel = 1 click coordinate — see the page, then `click`/`move_to` by `x/y` (the vision loop). Also for visual assertions and agent grounding. |
-| `navigate` | Load a URL in the active tab. |
+| `navigate` | Load a URL in the driven tab (the active one unless `tabs` picked another). |
 | `get_url` | Current tab URL. |
+| `tabs` | List tabs, or pick the one the browser tools drive without switching to it: `select` by id or URL/title text, `new` opens a URL in a background tab, `close`. A background tab supports reads, clicks and typing (the cursor animation is skipped there), not `screenshot`. |
 | `evaluate` | Run a JS function in the page (CDP `Runtime.evaluate`): page realm, uses the page's own cookies/session, awaits promises, ignores the page CSP. For reads and requests with no button (`() => document.title`, `async () => (await fetch('/api/x', { method: 'POST', credentials: 'include' })).status`). Returns the JSON result. Shows the debugger banner while it runs. |
 | `wait_for` | Wait for element ref or visible text (up to timeout). Use for resilient testing flows. |
 | `status` | Health / connection status, driver, active URL, port. Great for CI, long-running workflows, and monitoring. |
@@ -352,6 +384,7 @@ No extension needed. Grant Accessibility (and Screen Recording, only for screens
 | `desktop_apps` | Running apps, frontmost marked. |
 | `desktop_open` | Open or switch to an app by name and bring it to the front. |
 | `desktop_read` | The window as compact text: buttons, fields, links, menus, list items and visible text, each with a `[dN]` ref and center point. `find` returns only the best matches for a label. |
+| `desktop_wait_for` | Wait until a label or text shows up (a page or list still loading) and return it with its `[dN]` ref. |
 | `desktop_click` | Human path + click on a `[dN]` ref, a visible label (`text`), or `x/y`. Double and right click supported. |
 | `desktop_move` | Move there without clicking (hover menus, tooltips). |
 | `desktop_type` | Persona-timed typing into the focused field, or click a field first (`ref`, `into` label, `x/y`). `clear` replaces, `submit` presses Enter. |
@@ -465,6 +498,9 @@ multi-monitor / fractional-scaling setups is still rough.
 
 ## Known limitations
 
+- **Rust core: macOS and arm64 only.** Hover-only widgets do not work, Chromium ignores background keys (Enter, arrows), empty `type` text is rejected, and it is not wired under the Node `desktop_*` tools.
+- **Node background input** (`CGEventPostToPid`) works for native AppKit apps only; Chromium and Electron ignore it.
+- **`ac.record()` needs ffmpeg** to produce an mp4; without it the frames are kept.
 - **Desktop control is macOS only for now.** It reads the accessibility tree, so apps that draw their own UI without accessibility (games, some canvases) need `desktop_screenshot` plus `x/y` clicks.
 - **macOS grants permissions to the app that launched AgentCursor** (Terminal, Cursor, Claude...), not to AgentCursor itself. If the shared service was first started from a different app, grant that one, or stop the service (`curl -X POST http://127.0.0.1:8931/shutdown`) and let your main app start it.
 - **Desktop typing does not render typo corrections.** The persona's timing applies, but only the final characters are typed.

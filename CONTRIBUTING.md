@@ -12,6 +12,8 @@ Thanks for your interest in AgentCursor.
   mechanisms (e.g. the phase-2 OS cursor) implement this interface.
 - `src/action` + `src/server` — high-level actions and MCP tool registration.
 - `extension/` — the MV3 extension (thin replayer + page reader).
+- `native/` - Swift accessibility helper behind the Node `desktop_*` tools.
+- `rust/` - the computer use core: one `agentcursor` binary (CLI + MCP). Build with `cd rust && cargo build --release`.
 - `test-detector/` — a local realism scoring page.
 
 ## Before opening a PR
@@ -29,5 +31,4 @@ pnpm build
 
 ## Scope
 
-Phase 1 is the Chrome extension. Phase 2 is the macOS OS-cursor driver. Please
-open an issue before starting large work so we can align on the interface.
+Two surfaces: the Chrome extension (with the Node server and SDK) and macOS computer use (the Rust core in `rust/`, plus the Node `desktop_*` tools). The OS-cursor browser driver is optional. Please open an issue before starting large work so we can align on the interface. Read `AGENTS.md` first if you are an agent.

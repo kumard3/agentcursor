@@ -31,7 +31,11 @@ var CDP_KEYS = {
   " ": { code: "Space", vk: 32 }
 };
 var DebuggerDriver = class {
-  attached = /* @__PURE__ */ new Set();
+  // Refcounted: a recording holds a lease for its whole life, so the
+  // attach/detach around each input command cannot pull the session out from
+  // under it.
+  leases = /* @__PURE__ */ new Map();
+  screencasts = /* @__PURE__ */ new Map();
   async handle(tabId, cmd) {
     await this.attach(tabId);
     try {
@@ -82,17 +86,60 @@ var DebuggerDriver = class {
     }
   }
   async attach(tabId) {
-    if (this.attached.has(tabId)) return;
-    await chrome.debugger.attach({ tabId }, "1.3");
-    this.attached.add(tabId);
+    const held = this.leases.get(tabId) ?? 0;
+    if (held === 0) await chrome.debugger.attach({ tabId }, "1.3");
+    this.leases.set(tabId, held + 1);
   }
   async detach(tabId) {
-    if (!this.attached.has(tabId)) return;
-    this.attached.delete(tabId);
+    const held = this.leases.get(tabId) ?? 0;
+    if (held === 0) return;
+    if (held > 1) {
+      this.leases.set(tabId, held - 1);
+      return;
+    }
+    this.leases.delete(tabId);
     try {
       await chrome.debugger.detach({ tabId });
     } catch {
     }
+  }
+  /**
+   * Streams what the tab paints, as CDP screencast frames. Each frame is
+   * handed to onFrame and acknowledged, which is what keeps the next one
+   * coming. The visible cursor is a DOM overlay, so it is in the frames.
+   */
+  async startScreencast(tabId, options, onFrame) {
+    if (this.screencasts.has(tabId)) return;
+    await this.attach(tabId);
+    const listener = (source, method, params) => {
+      if (source.tabId !== tabId || method !== "Page.screencastFrame") return;
+      const frame = params;
+      onFrame({ data: frame.data, metadata: frame.metadata });
+      void chrome.debugger.sendCommand({ tabId }, "Page.screencastFrameAck", {
+        sessionId: frame.sessionId
+      }).catch(() => void 0);
+    };
+    chrome.debugger.onEvent.addListener(listener);
+    this.screencasts.set(tabId, listener);
+    await this.send(tabId, "Page.enable", {});
+    await this.send(tabId, "Page.startScreencast", {
+      format: options.format ?? "jpeg",
+      quality: options.quality ?? 80,
+      everyNthFrame: options.everyNthFrame ?? 1,
+      ...options.maxWidth ? { maxWidth: options.maxWidth } : {},
+      ...options.maxHeight ? { maxHeight: options.maxHeight } : {}
+    });
+  }
+  async stopScreencast(tabId) {
+    const listener = this.screencasts.get(tabId);
+    if (!listener) return;
+    this.screencasts.delete(tabId);
+    chrome.debugger.onEvent.removeListener(listener);
+    try {
+      await this.send(tabId, "Page.stopScreencast", {});
+    } catch {
+    }
+    await this.detach(tabId);
   }
   send(tabId, method, params) {
     return chrome.debugger.sendCommand({ tabId }, method, params);
@@ -240,7 +287,7 @@ async function onCommand(raw) {
   if (!env?.command) return;
   let result;
   try {
-    result = { id: env.id, ok: true, data: await route(env.command) };
+    result = { id: env.id, ok: true, data: await route(env.command, env.tab) };
   } catch (err) {
     result = {
       id: env.id,
@@ -259,8 +306,8 @@ async function activeTabId() {
     { active: true }
   ];
   for (const q of queries) {
-    const tabs = await chrome.tabs.query(q);
-    const tab = tabs.find((t) => t.id != null && isHttp(t)) ?? tabs.find((t) => t.id != null);
+    const tabs2 = await chrome.tabs.query(q);
+    const tab = tabs2.find((t) => t.id != null && isHttp(t)) ?? tabs2.find((t) => t.id != null);
     if (tab?.id != null) return tab.id;
   }
   const http = (await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] })).find(
@@ -269,8 +316,45 @@ async function activeTabId() {
   if (http?.id != null) return http.id;
   throw new Error("No active tab found. Open a normal http(s) tab in Chrome.");
 }
-async function route(cmd) {
-  const tabId = await activeTabId();
+async function pinnedTab(id) {
+  try {
+    return await chrome.tabs.get(id);
+  } catch {
+    throw new Error(`Tab ${id} is closed. Call tabs to pick another.`);
+  }
+}
+function tabInfo(t) {
+  return { id: t.id, title: t.title ?? "", url: t.url ?? "", active: t.active };
+}
+async function tabs(cmd, pinned) {
+  const list = async () => (await chrome.tabs.query({})).filter((t) => t.id != null).map(tabInfo);
+  if (cmd.action === "new") {
+    const tab = await chrome.tabs.create({ active: false });
+    if (cmd.url) await navigateAndWait(tab.id, cmd.url);
+    return { tabs: await list(), pin: tab.id };
+  }
+  if (cmd.action === "close") {
+    const id = cmd.id ?? pinned;
+    if (id == null) throw new Error("Nothing to close: pass id, or select a tab first.");
+    await chrome.tabs.remove(id);
+    return { tabs: await list(), ...id === pinned ? { pin: null } : {} };
+  }
+  const all = await list();
+  if (cmd.action === "list") return { tabs: all };
+  if (cmd.id == null && !cmd.url) return { tabs: all, pin: null };
+  const q = cmd.url?.toLowerCase() ?? "";
+  const hit = cmd.id != null ? all.find((t) => t.id === cmd.id) : all.find((t) => t.url.toLowerCase().includes(q)) ?? all.find((t) => t.title.toLowerCase().includes(q));
+  if (!hit) throw new Error(`No tab matches ${cmd.id ?? `"${cmd.url}"`}.`);
+  return { tabs: all, pin: hit.id };
+}
+async function route(cmd, pinned) {
+  if (cmd.kind === "tabs") return tabs(cmd, pinned);
+  const tabId = pinned != null ? (await pinnedTab(pinned)).id : await activeTabId();
+  if (cmd.kind === "screenshot" || cmd.kind === "windowGeometry") {
+    if (!(await chrome.tabs.get(tabId)).active) {
+      throw new Error(`Tab ${tabId} is in the background, so ${cmd.kind} cannot see it. read_page and find work there.`);
+    }
+  }
   if (cmd.kind === "navigate") {
     await navigateAndWait(tabId, cmd.url);
     return null;
@@ -295,6 +379,24 @@ async function route(cmd) {
   }
   if (cmd.kind === "hover" || cmd.kind === "ensureVisible") {
     return sendToContent(tabId, cmd);
+  }
+  if (cmd.kind === "startScreencast") {
+    await debuggerDriver.startScreencast(tabId, cmd, (frame) => {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({
+            event: "screencastFrame",
+            data: frame.data,
+            metadata: frame.metadata
+          })
+        );
+      }
+    });
+    return null;
+  }
+  if (cmd.kind === "stopScreencast") {
+    await debuggerDriver.stopScreencast(tabId);
+    return null;
   }
   if (cmd.kind === "evaluate") {
     return debuggerDriver.evaluate(tabId, cmd.expression);

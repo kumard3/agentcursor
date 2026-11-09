@@ -61,6 +61,19 @@ export function registerDesktopTools(server: McpServer, desktop: DesktopService)
   );
 
   server.registerTool(
+    "desktop_wait_for",
+    {
+      description:
+        "Wait until text or a label shows up in the app window (a page or list still loading), then return the match with its [dN] ref. timeoutMs defaults to 10000.",
+      inputSchema: { text: z.string(), app: z.string().optional(), timeoutMs: z.number().int().min(0).max(120_000).optional() },
+    },
+    async ({ text: query, app, timeoutMs }) => {
+      const hit = await desktop.waitFor(query, { app, timeoutMs });
+      return text(hit ? formatElement(hit) : `"${query}" did not appear within ${timeoutMs ?? 10_000}ms.`);
+    },
+  );
+
+  server.registerTool(
     "desktop_click",
     {
       description:

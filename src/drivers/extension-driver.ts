@@ -13,6 +13,7 @@ import type {
   BrowserDriver,
   ClickArgs,
   ScrollArgs,
+  TabsOp,
   TypeArgs,
   WaitArgs,
 } from "./driver";
@@ -112,7 +113,25 @@ export class ExtensionDriver implements BrowserDriver {
     )) as LocatorMatch;
   }
 
+  async startScreencast(options: {
+    format?: "jpeg" | "png";
+    quality?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+    everyNthFrame?: number;
+  }): Promise<void> {
+    await this.transport.send({ kind: "startScreencast", ...options }, ACTION_TIMEOUT_MS);
+  }
+
+  async stopScreencast(): Promise<void> {
+    await this.transport.send({ kind: "stopScreencast" }, ACTION_TIMEOUT_MS);
+  }
+
   async evaluate(expression: string): Promise<unknown> {
     return this.transport.send({ kind: "evaluate", expression }, ACTION_TIMEOUT_MS);
+  }
+
+  tabs(op: TabsOp) {
+    return this.transport.tabs(op);
   }
 }

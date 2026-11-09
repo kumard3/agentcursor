@@ -8,7 +8,7 @@ import type {
   Rect,
 } from "../protocol";
 import { buildEvalExpression } from "../protocol";
-import type { BrowserDriver } from "../drivers/driver";
+import type { BrowserDriver, TabsOp } from "../drivers/driver";
 import {
   generateMove,
   offCenterPoint,
@@ -158,6 +158,24 @@ export class ActionService {
 
   evaluate(fn: string, args: unknown[] = []): Promise<unknown> {
     return this.driver.evaluate(buildEvalExpression(fn, args));
+  }
+
+  tabs(op: TabsOp) {
+    return this.driver.tabs(op);
+  }
+
+  startScreencast(options: {
+    format?: "jpeg" | "png";
+    quality?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+    everyNthFrame?: number;
+  } = {}): Promise<void> {
+    return this.driver.startScreencast(options);
+  }
+
+  stopScreencast(): Promise<void> {
+    return this.driver.stopScreencast();
   }
 
   async waitFor(opts: {

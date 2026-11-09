@@ -187,6 +187,15 @@ export class DesktopService {
     return rankByText(view.elements, text).slice(0, opts.maxResults ?? 8);
   }
 
+  async waitFor(text: string, opts: { app?: string; timeoutMs?: number } = {}): Promise<DesktopElement | undefined> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 10_000);
+    for (;;) {
+      const [hit] = await this.find(text, { app: opts.app, maxResults: 1 });
+      if (hit || Date.now() >= deadline) return hit;
+      await sleep(250);
+    }
+  }
+
   async click(t: DesktopTarget & { button?: MouseButton; double?: boolean }): Promise<string> {
     const target = await this.resolve(t);
     await this.front(target.pid);
