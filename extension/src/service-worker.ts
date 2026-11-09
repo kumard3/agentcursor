@@ -183,6 +183,24 @@ async function route(cmd: Command, pinned?: number): Promise<unknown> {
     // Hover and ensureVisible go via content (for DOM scrollIntoView + events)
     return sendToContent(tabId, cmd);
   }
+  if (cmd.kind === "startScreencast") {
+    await debuggerDriver.startScreencast(tabId, cmd, (frame) => {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({
+            event: "screencastFrame",
+            data: frame.data,
+            metadata: frame.metadata,
+          }),
+        );
+      }
+    });
+    return null;
+  }
+  if (cmd.kind === "stopScreencast") {
+    await debuggerDriver.stopScreencast(tabId);
+    return null;
+  }
   if (cmd.kind === "evaluate") {
     // CDP Runtime.evaluate: page realm (page cookies + globals), awaits
     // promises, and bypasses the page CSP the way DevTools does.

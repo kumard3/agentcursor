@@ -164,6 +164,20 @@ export class ActionService {
     return this.driver.tabs(op);
   }
 
+  startScreencast(options: {
+    format?: "jpeg" | "png";
+    quality?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+    everyNthFrame?: number;
+  } = {}): Promise<void> {
+    return this.driver.startScreencast(options);
+  }
+
+  stopScreencast(): Promise<void> {
+    return this.driver.stopScreencast();
+  }
+
   async waitFor(opts: {
     ref?: string;
     text?: string;

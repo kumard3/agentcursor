@@ -8,6 +8,8 @@ import {
   type Command,
   type CommandEnvelope,
   type CommandResult,
+  type ExtensionEvent,
+  isExtensionEvent,
   type TabInfo,
   type TabsResult,
 } from "../protocol";
@@ -26,6 +28,7 @@ export class ExtensionTransport {
   private readonly wss: WebSocketServer;
   private socket: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
+  private readonly listeners = new Set<(event: ExtensionEvent) => void>();
   private tab: number | undefined;
 
   constructor(port = DEFAULT_WS_PORT) {
@@ -87,11 +90,21 @@ export class ExtensionTransport {
     return { tabs: res.tabs, pinned: this.tab };
   }
 
+  /** Subscribe to pushed events (screencast frames). Returns an unsubscribe. */
+  onEvent(handler: (event: ExtensionEvent) => void): () => void {
+    this.listeners.add(handler);
+    return () => this.listeners.delete(handler);
+  }
+
   private onMessage(raw: string): void {
     let result: CommandResult;
     try {
       result = JSON.parse(raw) as CommandResult;
     } catch {
+      return;
+    }
+    if (isExtensionEvent(result)) {
+      for (const handler of this.listeners) handler(result);
       return;
     }
     const entry = this.pending.get(result.id);
@@ -105,6 +118,7 @@ export class ExtensionTransport {
   close(): void {
     for (const entry of this.pending.values()) clearTimeout(entry.timer);
     this.pending.clear();
+    this.listeners.clear();
     this.wss.close();
   }
 }

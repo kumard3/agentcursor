@@ -40,3 +40,5 @@ export type {
   LocatorMatch,
   KeyOp,
 } from "./protocol";
+
+export type { RecordOptions, Recording, RecordingResult } from "./sdk/recorder";

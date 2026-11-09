@@ -7,6 +7,7 @@ import { createPersona } from "../persona";
 import { DEFAULT_WS_PORT } from "../protocol";
 import { ExtensionTransport } from "../server/transport";
 import { type LaunchOptions, launchBrowser } from "./launch";
+import { type RecordOptions, type Recording, createRecorder } from "./recorder";
 import { Locator } from "./locator";
 import type { ByOptions, ByRoleOptions, LocatorContext } from "./locator";
 
@@ -133,6 +134,44 @@ export class AgentCursor {
     }
     return data;
   }
+  /**
+   * Records what the tab paints, cursor included, until the returned handle is
+   * stopped. Frames come from CDP so they are not subject to the two-per-second
+   * cap on tab capture, and each one carries the paint timestamp, so the encode
+   * plays back at the speed the run actually happened.
+   *
+   *   const recording = await ac.record({ path: "run.mp4" });
+   *   ...drive the page...
+   *   const { path, frames } = await recording.stop();
+   */
+  async record(options: RecordOptions = {}): Promise<Recording> {
+    const recorder = createRecorder(options);
+    const unsubscribe = this.transport.onEvent((event) => {
+      if (event.event !== "screencastFrame") return;
+      recorder.addFrame(event.data, event.metadata?.timestamp);
+    });
+
+    await this.action.startScreencast({
+      format: options.format,
+      quality: options.quality,
+      maxWidth: options.maxWidth,
+      everyNthFrame: options.everyNthFrame,
+    });
+
+    let stopped = false;
+    return {
+      dir: recorder.dir,
+      stop: async () => {
+        if (!stopped) {
+          stopped = true;
+          await this.action.stopScreencast().catch(() => undefined);
+          unsubscribe();
+        }
+        return recorder.finish();
+      },
+    };
+  }
+
   async close(): Promise<void> {
     this.transport.close();
     await this.dispose?.();

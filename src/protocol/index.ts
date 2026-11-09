@@ -134,7 +134,16 @@ export type Command =
   | { kind: "pressKey"; key: string; mode: DeliveryMode }
   | { kind: "resolveLocator"; spec: LocatorSpec; timeoutMs: number; scrollIntoView?: boolean }
   | { kind: "evaluate"; expression: string }
-  | { kind: "tabs"; action: "list" | "select" | "new" | "close"; id?: number; url?: string };
+  | { kind: "tabs"; action: "list" | "select" | "new" | "close"; id?: number; url?: string }
+  | {
+      kind: "startScreencast";
+      format?: "jpeg" | "png";
+      quality?: number;
+      maxWidth?: number;
+      maxHeight?: number;
+      everyNthFrame?: number;
+    }
+  | { kind: "stopScreencast" };
 
 /**
  * Wrap a page function and its args into a self-calling expression for
@@ -170,6 +179,34 @@ export interface TabsResult {
 export type CommandResult =
   | { id: string; ok: true; data?: unknown }
   | { id: string; ok: false; error: string };
+
+/**
+ * Pushed from the extension without a command to answer. Screencast frames
+ * arrive this way: one command starts the stream, then frames keep coming
+ * until it is stopped.
+ */
+export type ExtensionEvent = {
+  event: "screencastFrame";
+  data: string;
+  metadata?: {
+    offsetTop?: number;
+    pageScaleFactor?: number;
+    deviceWidth?: number;
+    deviceHeight?: number;
+    scrollOffsetX?: number;
+    scrollOffsetY?: number;
+    timestamp?: number;
+  };
+};
+
+export function isExtensionEvent(value: unknown): value is ExtensionEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "event" in value &&
+    typeof (value as { event: unknown }).event === "string"
+  );
+}
 
 export function isCommandEnvelope(value: unknown): value is CommandEnvelope {
   return (

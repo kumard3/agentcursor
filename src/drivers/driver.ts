@@ -11,6 +11,14 @@ import type {
   TabInfo,
 } from "../protocol";
 
+export interface ScreencastOptions {
+  format?: "jpeg" | "png";
+  quality?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  everyNthFrame?: number;
+}
+
 export interface ClickArgs {
   samples: CursorSample[];
   target: Point;
@@ -75,4 +83,6 @@ export interface BrowserDriver {
   resolveLocator(spec: LocatorSpec, opts: { timeoutMs: number; scrollIntoView?: boolean }): Promise<LocatorMatch>;
   evaluate(expression: string): Promise<unknown>;
   tabs(op: TabsOp): Promise<{ tabs: TabInfo[]; pinned?: number }>;
+  startScreencast(options: ScreencastOptions): Promise<void>;
+  stopScreencast(): Promise<void>;
 }

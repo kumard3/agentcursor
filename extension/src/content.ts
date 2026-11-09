@@ -548,13 +548,37 @@ function valueOf(el: Element): string | undefined {
   return undefined;
 }
 
+/**
+ * email, number, date and colour inputs expose setSelectionRange but throw
+ * InvalidStateError when it is called, so optional chaining is not enough:
+ * the method is there, it just refuses. Only these types accept a caret.
+ */
+const SELECTABLE_INPUT_TYPES = new Set([
+  "text",
+  "search",
+  "url",
+  "tel",
+  "password",
+]);
+
+function setCaret(el: HTMLInputElement | HTMLTextAreaElement, pos: number): void {
+  if (el instanceof HTMLInputElement && !SELECTABLE_INPUT_TYPES.has(el.type)) {
+    return;
+  }
+  try {
+    el.setSelectionRange(pos, pos);
+  } catch {
+    // Some controls reject a caret even when the type looks selectable.
+  }
+}
+
 function insertChar(el: Element | null, ch: string): void {
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
     const start = el.selectionStart ?? el.value.length;
     const end = el.selectionEnd ?? el.value.length;
     el.value = el.value.slice(0, start) + ch + el.value.slice(end);
     const pos = start + ch.length;
-    el.setSelectionRange?.(pos, pos);
+    setCaret(el, pos);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   } else if (el instanceof HTMLElement && el.isContentEditable) {
     document.execCommand("insertText", false, ch);
@@ -566,7 +590,7 @@ function deleteChar(el: Element | null): void {
     const caret = el.selectionEnd ?? el.value.length;
     if (caret <= 0) return;
     el.value = el.value.slice(0, caret - 1) + el.value.slice(caret);
-    el.setSelectionRange?.(caret - 1, caret - 1);
+    setCaret(el, caret - 1);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   } else if (el instanceof HTMLElement && el.isContentEditable) {
     document.execCommand("delete", false);
