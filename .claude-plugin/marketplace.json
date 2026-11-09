@@ -4,7 +4,8 @@
     {
       "name": "agentcursor",
       "repository": "github.com/kumard3/agentcursor",
-      "directory": "/"
+      "directory": "/",
+      "description": "Computer use for any Mac app (Rust core) and browser automation for Chrome tabs (extension), over MCP."
     }
   ]
 }
